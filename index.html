@@ -1895,10 +1895,10 @@ function buildWing() {
 /* =====================================================================
    CHARACTER v3 — one seamless clay "bean person" (lathe body: head melts
    into shoulders/torso/hips, thick legs merged into the hip mass).
-   PAINTING v3 — true 3D-space brush: every atlas texel's 3D position is
-   pre-baked; a dab colours exactly the surface points inside a small
-   world-space sphere. Strokes are crisp, uniform, and flow continuously
-   across body parts — a touch on the leg paints a dot, never the leg.
+   PAINTING v4 — SCREEN-SPACE brush: every atlas texel's 3D position+normal is
+   pre-baked; a stroke colours exactly the visible surface inside the circle
+   under the cursor (depth-gated so it never reaches a limb's far side).
+   Wraps naturally around curvature; every visible pixel is paintable.
    ===================================================================== */
 const ATLAS = { torso:[8,8,236,496], head:[252,8,120,152], armL:[380,8,120,160],
                 armR:[252,168,120,160], legL:[380,176,120,168], legR:[252,336,120,168] };
@@ -2172,62 +2172,90 @@ function applyPoseFrame(p, t){
    ===================================================================== */
 let brush = { color:'#2e8f83', size:6, erase:false };   // size = diameter in CM
 let mySwatches = [];
-let lastDabW = null, lastDabT = 0, lastCur = {x:0,y:0}, lastCurPx = {x:innerWidth/2, y:innerHeight/2};
+let lastDabN = null, lastDabT = 0, lastCur = {x:0,y:0}, lastCurPx = {x:innerWidth/2, y:innerHeight/2};
 let pbPainting = false, pbOrbit = false, pbLast = null, eyedropArmed = false;
 let paintZoom = 2.9;
 const _pv2 = new THREE.Vector2();
 const _center = new THREE.Vector2(0,0);
-const _im4 = new THREE.Matrix4(), _wa = new THREE.Vector3(), _wb = new THREE.Vector3();
 const c3dEl = $('c3d');
 
 function canPaint(){
   const p = me();
   return p && p.role==='hider' && !p.caught && (G.phase==='prep' || G.phase==='hunt');
 }
-function dSeg(px,py,pz, a, b){ // point → segment distance
-  const abx=b.x-a.x, aby=b.y-a.y, abz=b.z-a.z;
-  const apx=px-a.x, apy=py-a.y, apz=pz-a.z;
-  const len2 = abx*abx+aby*aby+abz*abz;
-  let t = len2>1e-12 ? (apx*abx+apy*aby+apz*abz)/len2 : 0;
-  t = t<0?0:(t>1?1:t);
-  const dx=apx-abx*t, dy=apy-aby*t, dz=apz-abz*t;
-  return Math.sqrt(dx*dx+dy*dy+dz*dz);
-}
-/* paint a world-space sphere (or swept capsule) onto my body texture.
-   viewDirW = the aim ray's world direction: only CAMERA-FACING surface texels
-   take paint (a spray can't reach the far side of a limb — this is what stops
-   a stroke near an arm/leg silhouette from ringing the whole limb). */
-const _ldir = new THREE.Vector3();
-function worldDab(p, aWorld, bWorld, rM, hex, viewDirW){
+/* SCREEN-SPACE brush — paint lands EXACTLY inside the circle under the cursor.
+   A body texel takes paint iff:
+     (1) its screen projection is inside the cursor's brush circle
+         (circle radius = brush cm converted at the touched depth),
+     (2) its depth is close to the touched depth (paint can't reach the far
+         side of a limb, and can't tunnel to surfaces far behind), and
+     (3) it isn't back-facing.
+   This wraps naturally around limb curvature with zero smearing, and every
+   visible pixel of the body is paintable — including silhouette edges. */
+const _twp = new THREE.Vector3();
+function screenDab(p, ndc, prevNdc, hitDist, rM, hex, viewDirW){
   if(!BAKE || !p.bodyMeshes) return false;
   if(!p.paintData) p.paintData = p.paintCanvas.getContext('2d').getImageData(0,0,512,512);
   const D = p.paintData.data, pos = BAKE.pos, nrm = BAKE.nrm;
   const col = hex2rgb(hex);
-  const edge = 0.0075;                       // ~1 texel of anti-alias, in metres
+  const aspect = innerWidth/innerHeight;
+  const tanHalf = Math.tan(camera.fov*Math.PI/360);
+  const rN = rM / (hitDist * tanHalf);                 // brush radius in NDC-y units
+  const edgeN = Math.max(2/innerHeight, rN*0.12);      // ~1px anti-alias rim
+  const ax = ndc.x*aspect, ay = ndc.y;
+  let bx = ax, by = ay;
+  if(prevNdc){
+    bx = prevNdc.x*aspect; by = prevNdc.y;
+    const seg = Math.hypot(ax-bx, ay-by);
+    if(seg > Math.max(0.25, rN*6)){ bx=ax; by=ay; }    // teleporting cursor → dot, not a streak
+  }
+  const behind = Math.max(0.05, rM*1.5);               // depth window past the touch point
+  const infront = Math.max(0.10, rM*2.5);              // nearer surfaces inside the circle (e.g. the arm) still catch spray
+  const camP = camera.position;
   let mnx=512, mny=512, mxx=-1, mxy=-1;
   for(let mi=0; mi<p.bodyMeshes.length; mi++){
     const mesh = p.bodyMeshes[mi];
     mesh.updateWorldMatrix(true, false);
-    _im4.copy(mesh.matrixWorld).invert();
-    _wa.copy(aWorld).applyMatrix4(_im4);
-    _ldir.copy(viewDirW).transformDirection(_im4);   // view ray in this mesh's local frame
-    if(bWorld){ _wb.copy(bWorld).applyMatrix4(_im4);
-      // Connect consecutive dabs ONLY when they're close relative to the brush.
-      // On a thin limb the cursor can slip AROUND the curve in one mousemove —
-      // the connecting chord would tunnel through the limb otherwise.
-      const cap = Math.min(0.30, Math.max(0.05, rM*2.5));
-      if(_wa.distanceTo(_wb) > cap) _wb.copy(_wa);
-    } else _wb.copy(_wa);
+    const e = mesh.matrixWorld.elements;
     for(const blk of BAKE.blocks[mi]){
-      if(dSeg(blk.cx, blk.cy, blk.cz, _wa, _wb) > rM + blk.r + edge) continue;
+      // coarse cull: block centre (world) within a generous 3D reach of the view ray at hit depth
+      const bwx = e[0]*blk.cx + e[4]*blk.cy + e[8]*blk.cz + e[12];
+      const bwy = e[1]*blk.cx + e[5]*blk.cy + e[9]*blk.cz + e[13];
+      const bwz = e[2]*blk.cx + e[6]*blk.cy + e[10]*blk.cz + e[14];
+      // depth along view + radial distance from the cursor ray, both padded by block radius
+      const rx=bwx-camP.x, ry=bwy-camP.y, rz=bwz-camP.z;
+      const depth = rx*viewDirW.x + ry*viewDirW.y + rz*viewDirW.z;
+      if(depth < hitDist - infront - blk.r - 0.2 || depth > hitDist + behind + blk.r + 0.2) continue;
       const tex = blk.tex;
       for(let i=0; i<tex.length; i++){
         const o = tex[i];
-        const dd = dSeg(pos[o*3], pos[o*3+1], pos[o*3+2], _wa, _wb);
-        if(dd > rM + edge) continue;
-        // facing check: skip texels turned away from (or edge-on to) the sprayer
-        if(nrm[o*3]*_ldir.x + nrm[o*3+1]*_ldir.y + nrm[o*3+2]*_ldir.z > -0.15) continue;
-        let a = (rM - dd)/edge + 0.5;
+        const lx=pos[o*3], ly=pos[o*3+1], lz=pos[o*3+2];
+        const wx = e[0]*lx + e[4]*ly + e[8]*lz + e[12];
+        const wy = e[1]*lx + e[5]*ly + e[9]*lz + e[13];
+        const wz = e[2]*lx + e[6]*ly + e[10]*lz + e[14];
+        // depth gate
+        const dx_=wx-camP.x, dy_=wy-camP.y, dz_=wz-camP.z;
+        const d = dx_*viewDirW.x + dy_*viewDirW.y + dz_*viewDirW.z;
+        if(d < hitDist - infront || d > hitDist + behind) continue;
+        // back-face gate (lenient — only true away-facing texels are skipped)
+        const nx_=nrm[o*3], ny_=nrm[o*3+1], nz_=nrm[o*3+2];
+        const wnx = e[0]*nx_ + e[4]*ny_ + e[8]*nz_;
+        const wny = e[1]*nx_ + e[5]*ny_ + e[9]*nz_;
+        const wnz = e[2]*nx_ + e[6]*ny_ + e[10]*nz_;
+        if(wnx*viewDirW.x + wny*viewDirW.y + wnz*viewDirW.z > 0.03) continue;
+        // screen-space circle test
+        _twp.set(wx, wy, wz).project(camera);
+        const sx = _twp.x*aspect, sy = _twp.y;
+        // point→segment distance in isotropic screen space (stroke = swept circle)
+        const abx=ax-bx, aby=ay-by;
+        const apx=sx-bx, apy=sy-by;
+        const len2 = abx*abx+aby*aby;
+        let tt = len2>1e-12 ? (apx*abx+apy*aby)/len2 : 0;
+        tt = tt<0?0:(tt>1?1:tt);
+        const qx=apx-abx*tt, qy=apy-aby*tt;
+        const sd = Math.sqrt(qx*qx+qy*qy);
+        if(sd > rN + edgeN) continue;
+        let a = (rN - sd)/edgeN + 0.5;
         if(a>1) a=1; if(a<=0) continue;
         const q = o*4;
         D[q]   += (col.r - D[q])*a;
@@ -2254,22 +2282,15 @@ function paintAtNDC(nx, ny, drag){
   // an ORBIT drag, not a paint-through-the-wall — this is what lets you swing
   // the view left/right while pressed against a surface.
   const hits = raycaster.intersectObjects([p.obj, ...staticMeshes], true);
-  if(!hits.length || hits[0].object.userData.pid !== G.myId){ lastDabW = null; return false; }
+  if(!hits.length || hits[0].object.userData.pid !== G.myId){ lastDabN = null; return false; }
   const h = hits[0];
-  // silhouette-graze rejection: near a limb's edge, 1px of cursor motion slides
-  // the hit far around the curve — those unstable grazing hits smear. Only
-  // solidly camera-facing hits paint (a graze click starts an orbit instead).
-  if(h.face){
-    _pn.copy(h.face.normal).transformDirection(h.object.matrixWorld);
-    if(_pn.dot(raycaster.ray.direction) > -0.30){ lastDabW = null; return false; }
-  }
-  const hp = h.point;
   const col = brush.erase ? BODY_BASE : brush.color;
-  worldDab(p, hp, (drag && lastDabW && now()-lastDabT<0.5) ? lastDabW : null, brush.size/200, col, raycaster.ray.direction);
-  lastDabW = hp.clone(); lastDabT = now();
+  screenDab(p, {x:nx, y:ny},
+            (drag && lastDabN && now()-lastDabT<0.5) ? lastDabN : null,
+            h.distance, brush.size/200, col, raycaster.ray.direction);
+  lastDabN = {x:nx, y:ny}; lastDabT = now();
   return true;
 }
-const _pn = new THREE.Vector3();
 /* scroll = zoom while painting */
 c3dEl.addEventListener('wheel', e=>{
   if(!G.paintMode) return;
@@ -2281,7 +2302,7 @@ c3dEl.addEventListener('pointerdown', e=>{
   if(e.button===2){ pbOrbit = true; pbLast = {x:e.clientX, y:e.clientY}; return; } // right-drag ALWAYS orbits
   if(e.button!==0) return;
   if(eyedropArmed){ sampleScreenColor(e.clientX, e.clientY); setEyedrop(false); return; }
-  const n = evNDC(e); lastDabW = null;
+  const n = evNDC(e); lastDabN = null;
   if(paintAtNDC(n.x, n.y, false)){ pbPainting = true; }
   else { pbOrbit = true; pbLast = {x:e.clientX, y:e.clientY}; }
 });
@@ -2297,7 +2318,7 @@ addEventListener('pointermove', e=>{
     pbLast = {x:e.clientX, y:e.clientY};
   }
 });
-addEventListener('pointerup', ()=>{ pbPainting=false; pbOrbit=false; lastDabW=null; });
+addEventListener('pointerup', ()=>{ pbPainting=false; pbOrbit=false; lastDabN=null; });
 function evNDC(e){ return { x:(e.clientX/innerWidth)*2-1, y:-(e.clientY/innerHeight)*2+1 }; }
 
 /* ---------------- full-spectrum HSV palette ---------------- */
