@@ -686,7 +686,7 @@ function makeCanvasTex(w,h,draw){
   return {tex, cv};
 }
 function addBox(w,h,d, x,y,z, opt={}){
-  // opt: {color, canvas:{w,h,draw,repeat}, rough, metal, ry, noCollide, noSample, name}
+  // opt: {color, canvas:{w,h,draw,repeat}, rough, metal, ry, noCollide, noSample, noClimb, name}
   const geo = new THREE.BoxGeometry(w,h,d);
   let mat, sample;
   if(opt.canvas){
@@ -706,7 +706,12 @@ function addBox(w,h,d, x,y,z, opt={}){
   m.userData.env = true;
   scene.add(m); staticMeshes.push(m);
   if(!opt.noCollide && !opt.ry){
-    colliders.push({min:new THREE.Vector3(x-w/2,y-h/2,z-d/2), max:new THREE.Vector3(x+w/2,y+h/2,z+d/2)});
+    // climbable defaults true (real walls/props) — hung art sets noClimb: it's a
+    // thin decorative surface, not a real wall, and only spans its own frame
+    // height. Climbing past its top edge would hand control to whatever solid
+    // wall sits behind it at a DIFFERENT depth, snapping the body deeper —
+    // exactly the "goes in and doesn't come back out" bug.
+    colliders.push({min:new THREE.Vector3(x-w/2,y-h/2,z-d/2), max:new THREE.Vector3(x+w/2,y+h/2,z+d/2), climbable:!opt.noClimb});
   }
   return m;
 }
@@ -767,11 +772,11 @@ function drawRug(cx,w,h){
    and seekers correctly bump into hung art instead of phasing through it. */
 function hangArt(url, w, h, x, y, z, axis){
   const fw = w+0.42, fh = h+0.42;   // gold frame sits behind, slightly larger
-  if(axis==='z') addBox(fw,fh,0.14, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32});
-  else           addBox(0.14,fh,fw, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32});
+  if(axis==='z') addBox(fw,fh,0.14, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32, noClimb:true});
+  else           addBox(0.14,fh,fw, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32, noClimb:true});
   const ch = Math.max(64, Math.round(512*h/w));
   const opts = {canvas:{w:512, h:ch, draw:(cx,W,H)=>{cx.fillStyle='#5a5044'; cx.fillRect(0,0,W,H);}},
-                rough:0.85};
+                rough:0.85, noClimb:true};
   const m = axis==='z' ? addBox(w,h,0.24, x,y,z, opts) : addBox(0.24,h,w, x,y,z, opts);
   const img = new Image();
   img.onload = ()=>{
@@ -2701,7 +2706,22 @@ function moveWalk(dt){   // grounded movement with collision — seeker FPS, or 
 const CLIMB_SPD = 2.6;
 function touchingWall(){
   const y0 = ME.pos.y + 0.2, y1 = ME.pos.y + 1.8;
+  // hung art sits almost flush against the real wall behind it, so that wall is
+  // ALSO within climb reach whenever you're near a painting. Climbing straight up
+  // stays legal past the painting's own (shorter) height, at which point the only
+  // remaining collider is the deeper wall — resolveEmbed then snaps you from the
+  // painting's shallow depth to the wall's, a jarring "sink into the frame and
+  // don't come back out" jump. So: any non-climbable (painting/frame) collider
+  // nearby blocks climbing outright, at any height — you don't scale a framed
+  // picture, full stop.
   for(const c of colliders){
+    if(c.climbable!==false) continue;
+    const dx = Math.max(c.min.x - ME.pos.x, ME.pos.x - c.max.x, 0);
+    const dz = Math.max(c.min.z - ME.pos.z, ME.pos.z - c.max.z, 0);
+    if(Math.hypot(dx, dz) < 0.55) return false;
+  }
+  for(const c of colliders){
+    if(c.climbable===false) continue;
     if(c.max.y < y0 || c.min.y > y1) continue;
     if(c.max.y - c.min.y < 1.2) continue;                 // low props aren't climbable walls
     const dx = Math.max(c.min.x - ME.pos.x, ME.pos.x - c.max.x, 0);
