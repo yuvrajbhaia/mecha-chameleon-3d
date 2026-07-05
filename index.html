@@ -134,6 +134,13 @@ select{width:100%; background:#0d1219; color:var(--ink); border:1px solid var(--
   background:rgba(16,21,29,.94); border:1px solid var(--line); border-radius:14px;
   padding:10px 14px; display:flex; flex-direction:column; gap:9px; max-width:94vw;
 }
+.pbdrag{
+  align-self:center; width:44px; height:14px; margin:-4px 0 -2px;
+  display:flex; align-items:center; justify-content:center; gap:3px;
+  cursor:grab; border-radius:6px;
+}
+.pbdrag:active{ cursor:grabbing; }
+.pbdrag span{ width:4px; height:4px; border-radius:50%; background:var(--dim); }
 .pbrow{display:flex; align-items:center; gap:10px; flex-wrap:wrap;}
 #pbColor{width:30px; height:30px; border-radius:8px; border:2px solid #fff3; flex:0 0 auto;}
 #pbSwatches{display:flex; gap:6px; flex-wrap:wrap; max-width:280px;}
@@ -242,6 +249,8 @@ select{width:100%; background:#0d1219; color:var(--ink); border:1px solid var(--
         <select id="setHunt"><option value="180">3 min</option><option value="240" selected>4 min</option><option value="300">5 min</option><option value="360">6 min</option><option value="480">8 min</option><option value="600">10 min</option></select></div>
       <div><label class="fld">Mode</label>
         <select id="setMode"><option value="classic" selected>Classic</option><option value="infection">Infection</option></select></div>
+      <div><label class="fld">Speed</label>
+        <select id="setSpeed"><option value="0.7">0.7x</option><option value="0.85">0.85x</option><option value="1" selected>1x</option><option value="1.25">1.25x</option><option value="1.5">1.5x</option><option value="1.75">1.75x</option><option value="2">2x</option></select></div>
     </div>
     <button class="btn primary" id="btnStart">START ROUND</button>
     <button class="btn ghost" id="btnLeaveLobby">Leave</button>
@@ -271,6 +280,7 @@ select{width:100%; background:#0d1219; color:var(--ink); border:1px solid var(--
 
 <!-- ===================== LIVE PAINT BAR ===================== -->
 <div id="paintbar" class="hidden">
+  <div class="pbdrag" title="Drag to move"><span></span><span></span><span></span><span></span></div>
   <div class="pbrow">
     <div class="pbpickwrap" title="Full palette — click/drag">
       <canvas id="pbSV" width="150" height="96"></canvas>
@@ -349,7 +359,7 @@ const TICK_MOVE  = 1/15;      // client transform send rate
 const INTERP_LAG = 0.13;      // remote render delay (s)
 const PLAYER_COLORS = ['#b8ff29','#3ee6c4','#ffc247','#ff5d6c','#7aa2ff','#ff8ede','#9dff9d','#ffb38a'];
 const BODY_BASE = '#f4f2ee';  // unpainted mecha shell — the telltale white
-const HIDER_SPEED = 4.4, SEEKER_SPEED = 5.0, FREECAM_SPEED = 9;
+const HIDER_SPEED = 6.2, SEEKER_SPEED = 7.0, FREECAM_SPEED = 9;
 const JUMP_V = 5.6, GRAV = 14.5;
 const SHOT_CD = 0.4;   // paint-gun fire rate (s)
 const WHISTLE_MIN = 22, WHISTLE_RAND = 18;
@@ -384,7 +394,7 @@ const G = {
   players:{},            // id -> player record (net + render)
   phase:'lobby',         // lobby | prep | hunt | reveal | board
   tEnd:0, tPhaseStart:0, round:0,
-  mode:'classic', prepLen:75, huntLen:240,
+  mode:'classic', prepLen:75, huntLen:240, speedMult:1,
   winner:'', revealList:[],
   paintMode:false, poseOpen:false,
 };
@@ -559,7 +569,7 @@ function hostRemovePlayer(id){
 }
 function broadcastLobby(){
   T.toAll({t:'lobby', players:Object.values(G.players).map(p=>({id:p.id,name:p.name})),
-    settings:{prep:G.prepLen, hunt:G.huntLen, mode:G.mode}});
+    settings:{prep:G.prepLen, hunt:G.huntLen, mode:G.mode, speed:G.speedMult}});
 }
 
 /* ---------------- client side ---------------- */
@@ -584,7 +594,7 @@ function clientHandle(m){
         if(!G.players[pl.id]) { G.players[pl.id]=newPlayer(pl.id,pl.name); ensurePlayerVisual(G.players[pl.id]); }
         G.players[pl.id].name = pl.name;
       }
-      if(m.settings){ G.prepLen=m.settings.prep; G.huntLen=m.settings.hunt; G.mode=m.settings.mode; }
+      if(m.settings){ G.prepLen=m.settings.prep; G.huntLen=m.settings.hunt; G.mode=m.settings.mode; G.speedMult=m.settings.speed||1; }
       if(G.screen==='lobby') renderLobby();
       break; }
     case 'state': applySnapshot(m.s); break;
@@ -2576,6 +2586,42 @@ function setBrushColor(hex, fromPalette){
   addEventListener('pointermove', e=>{ if(dragSV) svPick(e); if(dragHue) huPick(e); });
   addEventListener('pointerup', ()=>{ dragSV=false; dragHue=false; });
 })();
+/* ---------------- paintbar drag (grip handle repositions the panel) ---------------- */
+(function(){
+  const bar = $('paintbar'), handle = document.querySelector('.pbdrag');
+  let dragging = false, offX = 0, offY = 0;
+  function setPos(left, top){
+    bar.style.left = left+'px'; bar.style.top = top+'px';
+    bar.style.bottom = 'auto'; bar.style.transform = 'none';
+  }
+  function place(left, top){   // only used while dragging — bar is visible, rect is real
+    const r = bar.getBoundingClientRect();
+    left = clamp(left, 4, innerWidth - r.width - 4);
+    top  = clamp(top, 4, innerHeight - r.height - 4);
+    setPos(left, top);
+  }
+  // restore saved position as-is: the bar is still display:none here (paint mode
+  // hasn't opened yet) so its rect reads as 0×0 — clamping against that would
+  // collapse a valid saved spot into the corner. It was already clamped when saved.
+  const saved = JSON.parse(localStorage.getItem('mc3d-paintbar-pos')||'null');
+  if(saved) setPos(saved.left, saved.top);
+  handle.addEventListener('pointerdown', e=>{
+    dragging = true;
+    const r = bar.getBoundingClientRect();
+    offX = e.clientX - r.left; offY = e.clientY - r.top;
+    e.stopPropagation(); e.preventDefault();
+  });
+  addEventListener('pointermove', e=>{
+    if(!dragging) return;
+    place(e.clientX - offX, e.clientY - offY);
+  });
+  addEventListener('pointerup', ()=>{
+    if(!dragging) return;
+    dragging = false;
+    const r = bar.getBoundingClientRect();
+    localStorage.setItem('mc3d-paintbar-pos', JSON.stringify({left:r.left, top:r.top}));
+  });
+})();
 function addSwatch(hex){
   if(!mySwatches.includes(hex)){ mySwatches.unshift(hex); mySwatches = mySwatches.slice(0,10); }
   renderSwatches();
@@ -2783,7 +2829,7 @@ function collides(x,y,z){
 }
 function moveWalk(dt){   // grounded movement with collision — seeker FPS, or a running hider
   const p = me();
-  const speed = (p.role==='seeker' ? SEEKER_SPEED : HIDER_SPEED) * (keys['shift']?1.35:1);
+  const speed = (p.role==='seeker' ? SEEKER_SPEED : HIDER_SPEED) * (keys['shift']?1.35:1) * (G.speedMult||1);
   let fx=0, fz=0;
   if(keys['w']) fz-=1; if(keys['s']) fz+=1;
   if(keys['a']) fx-=1; if(keys['d']) fx+=1;
@@ -2830,7 +2876,7 @@ function touchingWall(){
 }
 function moveHiderClimb(dt){
   const p = me();
-  const sp = HIDER_SPEED * dt;
+  const sp = HIDER_SPEED * (G.speedMult||1) * dt;
   let fx=0, fz=0;
   if(keys['w']) fz-=1; if(keys['s']) fz+=1;
   if(keys['a']) fx-=1; if(keys['d']) fx+=1;
@@ -2986,7 +3032,7 @@ function hostStartRound(){
     p.ry = Math.random()*Math.PI*2;
     if(p.mat){ p.mat.transparent=false; p.mat.opacity=1; }
   }
-  G.prepLen = +$('setPrep').value; G.huntLen = +$('setHunt').value; G.mode = $('setMode').value;
+  G.prepLen = +$('setPrep').value; G.huntLen = +$('setHunt').value; G.mode = $('setMode').value; G.speedMult = +$('setSpeed').value;
   G.phase='prep'; G.tEnd = now()+G.prepLen; G.tPhaseStart = now();
   broadcastState(true);
   onPhaseLocal('prep');
