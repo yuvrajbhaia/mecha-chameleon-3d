@@ -542,8 +542,8 @@ function hostAddPlayer(id, name){
   for(const pid in G.players){
     const q = G.players[pid];
     if(pid!==id && q.paintCanvas){
-      const sm=document.createElement('canvas'); sm.width=sm.height=256;
-      sm.getContext('2d').drawImage(q.paintCanvas,0,0,256,256);
+      const sm=document.createElement('canvas'); sm.width=sm.height=512;
+      sm.getContext('2d').drawImage(q.paintCanvas,0,0,512,512);
       T.toOne(id, {t:'paint', id:pid, tex:sm.toDataURL('image/png'), metal:q.metal, rough:q.rough});
     }
   }
@@ -1903,17 +1903,52 @@ function buildWing() {
 /* =====================================================================
    CHARACTER v3 — one seamless clay "bean person" (lathe body: head melts
    into shoulders/torso/hips, thick legs merged into the hip mass).
-   PAINTING v4 — SCREEN-SPACE brush: every atlas texel's 3D position+normal is
-   pre-baked; a stroke colours exactly the visible surface inside the circle
-   under the cursor (depth-gated so it never reaches a limb's far side).
-   Wraps naturally around curvature; every visible pixel is paintable.
+   PAINTING v6 — HIGH-RES UNIFORM-DENSITY paint skin + 3D-surface brush.
+   The paint sheet is 1024² and each body part's atlas slot is sized by its
+   REAL surface dimensions, so every part gets the SAME ~2.8 mm/texel paint
+   density — a small brush makes an equally small, crisp mark on the torso,
+   an arm or a leg (previously limbs got 4–7 mm blocky texels → "chunks").
+   UVs are inset 2 px from each slot and the border ring is gap-filled, so
+   GPU filtering never blends the white gutters into the skin (that was the
+   white edge/seam artifact). Mipmaps are off for the same reason.
    ===================================================================== */
-const ATLAS = { torso:[8,8,236,496], head:[252,8,120,152], armL:[380,8,120,160],
-                armR:[252,168,120,160], legL:[380,176,120,168], legR:[252,336,120,168] };
+const PAINT_N = 1024, PAINT_MASK = PAINT_N-1, PAINT_SHIFT = 10;
+// slots sized for uniform ~354 texels/metre (circumference × ARC length, metres):
+// torso 1.98×~1.0 · head 1.41×0.75 · arm 0.52×1.06 · leg 0.85×0.84
+const ATLAS = { torso:[8,8,700,352],   head:[8,368,500,260],
+                armL:[716,8,184,374],  armR:[716,390,184,374],
+                legL:[8,636,300,300],  legR:[316,636,300,300] };
+/* CapsuleGeometry's stock UVs are lathe-style: v advances per profile POINT,
+   so the two round caps (many points over tiny arcs) hog ~90% of the texture
+   rows and the whole shaft — the part you actually paint — collapses into a
+   sliver of ~12 mm texels. THAT was the unfixable "paints a whole chunk of my
+   hand". Remap v by true arc length along the capsule profile instead:
+   bottom-pole→equator arc (r·φ) → shaft (straight) → equator→top-pole arc. */
+function capsuleArcUV(geo, r, len){
+  const pp = geo.attributes.position, uv = geo.attributes.uv;
+  const S = Math.PI*r + len, h = len/2;
+  for(let i=0;i<uv.count;i++){
+    const y = pp.getY(i);
+    let s;
+    if(y < -h){        // bottom cap: y = -h - r·cos(φ), arc from pole = r·φ
+      const c = clamp((-h - y)/r, -1, 1);
+      s = r*Math.acos(c);
+    }else if(y > h){   // top cap: y = h + r·sin(α), arc past shaft = r·α
+      const c = clamp((y - h)/r, -1, 1);
+      s = r*Math.PI/2 + len + r*Math.asin(c);
+    }else{             // shaft
+      s = r*Math.PI/2 + (y + h);
+    }
+    uv.setY(i, clamp(s/S, 0, 1));
+  }
+  return geo;
+}
 function setUVRect(geo, rect){ // rect: [x,y,w,h] in canvas px (y from top)
   const [rx,ry,rw,rh] = rect;
-  const u0 = rx/512, u1 = (rx+rw)/512;
-  const v0 = (512-ry-rh)/512, v1 = (512-ry)/512; // flipY canvas → uv
+  // 2-texel inset: filtering at the UV border stays inside the slot, on
+  // gap-filled (paintable) texels — never on the white gutter between slots
+  const u0 = (rx+2)/PAINT_N, u1 = (rx+rw-2)/PAINT_N;
+  const v0 = (PAINT_N-ry-rh+2)/PAINT_N, v1 = (PAINT_N-ry-2)/PAINT_N; // flipY canvas → uv
   const uv = geo.attributes.uv;
   for(let i=0;i<uv.count;i++){
     uv.setXY(i, lerp(u0,u1,uv.getX(i)), lerp(v0,v1,uv.getY(i)));
@@ -1921,7 +1956,7 @@ function setUVRect(geo, rect){ // rect: [x,y,w,h] in canvas px (y from top)
   uv.needsUpdate = true;
   return geo;
 }
-function paintBase(cx){ cx.fillStyle = BODY_BASE; cx.fillRect(0,0,512,512); }
+function paintBase(cx){ cx.fillStyle = BODY_BASE; cx.fillRect(0,0,PAINT_N,PAINT_N); }
 
 /* ---- geometry: marshmallow person — distinct head/arms/legs, buttery smooth ---- */
 function smoothLatheProfile(ctrl, n){
@@ -1940,17 +1975,17 @@ function bodyGeometries(){
   return {
     torso: setUVRect(new THREE.LatheGeometry(smoothLatheProfile(torsoCtrl, 36), 40), ATLAS.torso),
     head:  setUVRect(head, ATLAS.head),
-    armL:  setUVRect(new THREE.CapsuleGeometry(0.082,0.80,10,18), ATLAS.armL),
-    armR:  setUVRect(new THREE.CapsuleGeometry(0.082,0.80,10,18), ATLAS.armR),
-    legL:  setUVRect(new THREE.CapsuleGeometry(0.135,0.42,10,18), ATLAS.legL),
-    legR:  setUVRect(new THREE.CapsuleGeometry(0.135,0.42,10,18), ATLAS.legR),
+    armL:  setUVRect(capsuleArcUV(new THREE.CapsuleGeometry(0.082,0.80,10,18), 0.082,0.80), ATLAS.armL),
+    armR:  setUVRect(capsuleArcUV(new THREE.CapsuleGeometry(0.082,0.80,10,18), 0.082,0.80), ATLAS.armR),
+    legL:  setUVRect(capsuleArcUV(new THREE.CapsuleGeometry(0.135,0.42,10,18), 0.135,0.42), ATLAS.legL),
+    legR:  setUVRect(capsuleArcUV(new THREE.CapsuleGeometry(0.135,0.42,10,18), 0.135,0.42), ATLAS.legR),
   };
 }
 
 /* ---- bake: atlas texel → 3D position in its mesh's local space ---- */
 let BAKE = null;
 function bakeBodyMap(geos){
-  const N = 512;
+  const N = PAINT_N;
   const mask = new Uint8Array(N*N).fill(255);
   const pos = new Float32Array(N*N*3);
   const nrm = new Float32Array(N*N*3);   // per-texel surface normal (mesh-local)
@@ -2019,8 +2054,8 @@ function bakeBodyMap(geos){
       }
     }
   }
-  // 8px blocks per mesh for fast dab lookup
-  const BS=8, NB=N/BS;
+  // 16px blocks per mesh for fast dab lookup (same 64×64 grid as 8px at 512)
+  const BS=16, NB=N/BS;
   const blocks = geos.map(()=>[]);
   for(let by=0; by<NB; by++){
     for(let bx=0; bx<NB; bx++){
@@ -2051,10 +2086,14 @@ function bakeBodyMap(geos){
 }
 
 function buildCharacter(p){
-  const cv = document.createElement('canvas'); cv.width=512; cv.height=512;
+  const cv = document.createElement('canvas'); cv.width=PAINT_N; cv.height=PAINT_N;
   paintBase(cv.getContext('2d'));
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
+  // no mipmaps: distant mips would average the white atlas gutters into the
+  // skin (white halos), and skipping mip regen makes every stroke cheaper
+  tex.generateMipmaps = false;
+  tex.minFilter = THREE.LinearFilter;
   // UNLIT: painted colours render pixel-identical to what you eyedropped
   const mat = new THREE.MeshBasicMaterial({map:tex});
 
@@ -2206,10 +2245,10 @@ function canPaint(){
    No screen projection, no depth window: physical size is consistent everywhere. */
 function surfaceDab(p, hitW, prevW, rM, hex, viewDirW){
   if(!BAKE || !p.bodyMeshes) return false;
-  if(!p.paintData) p.paintData = p.paintCanvas.getContext('2d').getImageData(0,0,512,512);
+  if(!p.paintData) p.paintData = p.paintCanvas.getContext('2d').getImageData(0,0,PAINT_N,PAINT_N);
   const D = p.paintData.data, pos = BAKE.pos, nrm = BAKE.nrm;
   const col = hex2rgb(hex);
-  const soft = Math.max(0.004, rM*0.30);               // physical soft rim (≥4 mm) — rM is the half-alpha radius
+  const soft = Math.max(0.002, rM*0.18);               // crisp rim (~2.8 mm texels can afford it) — rM is the half-alpha radius
   const reach = rM + soft;
   // stroke segment A→B in WORLD space; only connect to the previous dab if the
   // hit point barely moved. A cursor that slid around a limb's silhouette makes a
@@ -2223,7 +2262,7 @@ function surfaceDab(p, hitW, prevW, rM, hex, viewDirW){
   const abx=Ax-Bx, aby=Ay-By, abz=Az-Bz;
   const abLen2 = abx*abx+aby*aby+abz*abz;
   const cullR = reach + Math.sqrt(abLen2);
-  let mnx=512, mny=512, mxx=-1, mxy=-1;
+  let mnx=PAINT_N, mny=PAINT_N, mxx=-1, mxy=-1;
   for(let mi=0; mi<p.bodyMeshes.length; mi++){
     const mesh = p.bodyMeshes[mi];
     mesh.updateWorldMatrix(true, false);
@@ -2247,7 +2286,17 @@ function surfaceDab(p, hitW, prevW, rM, hex, viewDirW){
         const wnx = e[0]*nx_ + e[4]*ny_ + e[8]*nz_;
         const wny = e[1]*nx_ + e[5]*ny_ + e[9]*nz_;
         const wnz = e[2]*nx_ + e[6]*ny_ + e[10]*nz_;
-        if(wnx*viewDirW.x + wny*viewDirW.y + wnz*viewDirW.z > 0.4) continue;
+        // facing gate is a BACKUP only — the depth-behind guard below does the
+        // real job of stopping paint from reaching a limb's far side (it works
+        // on distance, not angle, so it doesn't care about normals at all).
+        // Near-degenerate zones (the torso's neck/hip lathe poles, the chin
+        // underside of the head sphere) bake a normal that tips toward
+        // straight up/down instead of outward, and can only be viewed from an
+        // impractical near-floor look-up angle — with the OLD strict gate
+        // those texels were permanently white no matter how thoroughly you
+        // orbited. So this only rejects texels pointing almost EXACTLY away
+        // from the viewer; everything else is left to depth+distance.
+        if(wnx*viewDirW.x + wny*viewDirW.y + wnz*viewDirW.z > 0.97) continue;
         // depth guard: never reach THROUGH the surface onto a part behind it. A
         // big brush on the arm must not bleed onto the torso ~8cm behind it. The
         // hit point is the front-most surface, so cap how far past it (along view)
@@ -2268,7 +2317,7 @@ function surfaceDab(p, hitW, prevW, rM, hex, viewDirW){
         D[q+1] += (col.g - D[q+1])*a;
         D[q+2] += (col.b - D[q+2])*a;
         D[q+3] = 255;
-        const x = o & 511, y = o >> 9;
+        const x = o & PAINT_MASK, y = o >> PAINT_SHIFT;
         if(x<mnx)mnx=x; if(x>mxx)mxx=x; if(y<mny)mny=y; if(y>mxy)mxy=y;
       }
     }
@@ -2409,8 +2458,8 @@ let paintSyncT = 0;
 function schedulePaintSync(){ clearTimeout(paintSyncT); paintSyncT = setTimeout(sendPaint, 400); }
 function sendPaint(){
   const p = me(); if(!p||!p.paintCanvas||!T) return;
-  const small = document.createElement('canvas'); small.width=256; small.height=256;
-  small.getContext('2d').drawImage(p.paintCanvas,0,0,256,256);
+  const small = document.createElement('canvas'); small.width=512; small.height=512;
+  small.getContext('2d').drawImage(p.paintCanvas,0,0,512,512);
   const tex = small.toDataURL('image/png');
   const msg = {t:'paint', id:G.myId, tex, metal:p.metal, rough:p.rough};
   if(G.isHost){ T.toAll(msg); } else { T.toHost(msg); }
@@ -2423,8 +2472,8 @@ function applyPaint(id, texUrl, metal, rough){
   const img = new Image();
   img.onload = ()=>{
     const cx = p.paintCanvas.getContext('2d');
-    cx.clearRect(0,0,512,512);
-    cx.drawImage(img, 0,0, 512,512);
+    cx.clearRect(0,0,PAINT_N,PAINT_N);
+    cx.drawImage(img, 0,0, PAINT_N,PAINT_N);
     p.paintTex.needsUpdate = true;
   };
   img.src = texUrl;
@@ -3577,12 +3626,75 @@ window.MC = {
   splatCount(){ return splats.length; },
   colliderAt(x,y,z){ const c=collides(x,y,z); return c?{min:[c.min.x,c.min.y,c.min.z],max:[c.max.x,c.max.y,c.max.z]}:null; },
   allCollidersNear(x,z,r){ return colliders.filter(c=>x>=c.min.x-r&&x<=c.max.x+r&&z>=c.min.z-r&&z<=c.max.z+r).map(c=>({min:[+c.min.x.toFixed(2),+c.min.y.toFixed(2),+c.min.z.toFixed(2)],max:[+c.max.x.toFixed(2),+c.max.y.toFixed(2),+c.max.z.toFixed(2)]})); },
+  // paint one dab at NDC, diff the paint buffer, report per-part texel count +
+  // max pairwise 3D spread (should ≈ brush diameter, never the limb circumference)
+  measureDab(nx, ny){
+    const p = me(); if(!p||!p.paintCanvas||!BAKE) return null;
+    const ctx = p.paintCanvas.getContext('2d');
+    if(!p.paintData) p.paintData = ctx.getImageData(0,0,PAINT_N,PAINT_N);
+    const before = Uint8ClampedArray.from(p.paintData.data);
+    paintAtNDC(nx, ny, false);
+    const after = p.paintData.data, NT=PAINT_N*PAINT_N;
+    const pos = BAKE.pos, mask = BAKE.mask;
+    const mats = p.bodyMeshes.map(m=>{ m.updateWorldMatrix(true,false); return m.matrixWorld.elements; });
+    const NAMES=['torso','head','armL','armR','legL','legR'], perMesh={};
+    let count=0;
+    for(let o=0;o<NT;o++){
+      const q=o*4;
+      if(before[q]===after[q]&&before[q+1]===after[q+1]&&before[q+2]===after[q+2]) continue;
+      count++;
+      const mi=mask[o]; if(mi===255) continue;
+      const e=mats[mi], lx=pos[o*3], ly=pos[o*3+1], lz=pos[o*3+2];
+      (perMesh[mi]=perMesh[mi]||[]).push([e[0]*lx+e[4]*ly+e[8]*lz+e[12], e[1]*lx+e[5]*ly+e[9]*lz+e[13], e[2]*lx+e[6]*ly+e[10]*lz+e[14]]);
+    }
+    const out={count, brushDiaM:brush.size/100, meshes:{}};
+    for(const mi in perMesh){
+      const pts=perMesh[mi]; let maxd=0;
+      const step = Math.max(1, Math.floor(pts.length/400));   // subsample huge dabs — O(n²) guard
+      for(let i=0;i<pts.length;i+=step)for(let j=i+step;j<pts.length;j+=step){
+        const dx=pts[i][0]-pts[j][0],dy=pts[i][1]-pts[j][1],dz=pts[i][2]-pts[j][2],d=dx*dx+dy*dy+dz*dz;
+        if(d>maxd)maxd=d;
+      }
+      out.meshes[NAMES[mi]||mi]={texels:pts.length, spread3D:+Math.sqrt(maxd).toFixed(4)};
+    }
+    return out;
+  },
+  // count texels still at the white base colour inside each part's atlas slot
+  whiteCount(){
+    const p = me(); if(!p||!p.paintCanvas||!BAKE) return null;
+    const ctx = p.paintCanvas.getContext('2d');
+    const D = ctx.getImageData(0,0,PAINT_N,PAINT_N).data;
+    const base = hex2rgb(BODY_BASE);
+    const NAMES=['torso','head','armL','armR','legL','legR'], out={};
+    Object.values(ATLAS).forEach((r,mi)=>{
+      let white=0, tot=0;
+      for(let y=r[1]; y<r[1]+r[3]; y++) for(let x=r[0]; x<r[0]+r[2]; x++){
+        const o=y*PAINT_N+x; if(BAKE.mask[o]!==mi) continue;
+        tot++;
+        const q=o*4;
+        if(Math.abs(D[q]-base.r)<6 && Math.abs(D[q+1]-base.g)<6 && Math.abs(D[q+2]-base.b)<6) white++;
+      }
+      out[NAMES[mi]]={white, tot, pct:+(100*white/Math.max(1,tot)).toFixed(1)};
+    });
+    return out;
+  },
+  // raw raycast (self + environment) at an arbitrary NDC point — debug helper
+  hitAt(nx,ny){
+    const p = me(); if(!p||!p.obj) return null;
+    camera.updateMatrixWorld();
+    raycaster.setFromCamera(new THREE.Vector2(nx,ny), camera);
+    const hits = raycaster.intersectObjects([p.obj, ...staticMeshes], true);
+    return hits.slice(0,3).map(h=>({name:h.object.userData.name||h.object.geometry.type, pid:h.object.userData.pid||null, dist:+h.distance.toFixed(2)}));
+  },
   // project each body-part mesh centre to NDC (debug aim helper for paint QA)
   limbNDC(){
     const p = me(); if(!p||!p.bodyMeshes) return null;
     camera.updateMatrixWorld();
+    // bbox CENTRE, not mesh.getWorldPosition() — a Lathe/offset geometry's own
+    // transform origin can sit far from its visual middle (torso's origin is at
+    // the character's feet; its geometry lives entirely above that)
     const NAMES=['torso','head','armL','armR','legL','legR'], v=new THREE.Vector3(), out={};
-    p.bodyMeshes.forEach((m,i)=>{ m.getWorldPosition(v); v.project(camera); out[NAMES[i]]=[+v.x.toFixed(3),+v.y.toFixed(3)]; });
+    p.bodyMeshes.forEach((m,i)=>{ new THREE.Box3().setFromObject(m).getCenter(v); v.project(camera); out[NAMES[i]]=[+v.x.toFixed(3),+v.y.toFixed(3)]; });
     return out;
   },
 };
