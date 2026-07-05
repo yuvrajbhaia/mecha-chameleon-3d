@@ -2191,49 +2191,50 @@ function canPaint(){
   const p = me();
   return p && p.role==='hider' && !p.caught && (G.phase==='prep' || G.phase==='hunt');
 }
-/* SCREEN-SPACE brush — paint lands EXACTLY inside the circle under the cursor.
-   A body texel takes paint iff:
-     (1) its screen projection is inside the cursor's brush circle
-         (circle radius = brush cm converted at the touched depth),
-     (2) its depth is close to the touched depth (paint can't reach the far
-         side of a limb, and can't tunnel to surfaces far behind), and
-     (3) it isn't back-facing.
-   This wraps naturally around limb curvature with zero smearing, and every
-   visible pixel of the body is paintable — including silhouette edges. */
-const _twp = new THREE.Vector3();
-function screenDab(p, ndc, prevNdc, hitDist, rM, hex, viewDirW){
+/* 3D-SURFACE brush — the brush radius is a REAL DISTANCE ON THE BODY, measured
+   in metres, NOT a circle in screen pixels. That is the whole fix: a screen
+   circle foreshortens near a limb's silhouette (the surface goes edge-on to the
+   camera, so a tiny on-screen circle smears across a big wrap-around swath), which
+   is exactly why small strokes used to paint a huge chunk of an arm/leg. Here a
+   texel takes paint iff:
+     (1) its 3D distance to the cursor's hit POINT (or the swept stroke segment,
+         in world space) is within the brush radius rM — so a 3 cm brush paints a
+         3 cm patch on the torso, a thin arm, dead-centre or right at the edge,
+         identically, and
+     (2) it isn't clearly back-facing (lenient gate — keeps the far side of a thin
+         limb clean while still painting all the way to the silhouette edge).
+   No screen projection, no depth window: physical size is consistent everywhere. */
+function surfaceDab(p, hitW, prevW, rM, hex, viewDirW){
   if(!BAKE || !p.bodyMeshes) return false;
   if(!p.paintData) p.paintData = p.paintCanvas.getContext('2d').getImageData(0,0,512,512);
   const D = p.paintData.data, pos = BAKE.pos, nrm = BAKE.nrm;
   const col = hex2rgb(hex);
-  const aspect = innerWidth/innerHeight;
-  const tanHalf = Math.tan(camera.fov*Math.PI/360);
-  const rN = rM / (hitDist * tanHalf);                 // brush radius in NDC-y units
-  const edgeN = Math.max(2/innerHeight, rN*0.12);      // ~1px anti-alias rim
-  const ax = ndc.x*aspect, ay = ndc.y;
-  let bx = ax, by = ay;
-  if(prevNdc){
-    bx = prevNdc.x*aspect; by = prevNdc.y;
-    const seg = Math.hypot(ax-bx, ay-by);
-    if(seg > Math.max(0.25, rN*6)){ bx=ax; by=ay; }    // teleporting cursor → dot, not a streak
+  const soft = Math.max(0.004, rM*0.30);               // physical soft rim (≥4 mm) — rM is the half-alpha radius
+  const reach = rM + soft;
+  // stroke segment A→B in WORLD space; only connect to the previous dab if the
+  // hit point barely moved. A cursor that slid around a limb's silhouette makes a
+  // big 3D jump — connecting that would tunnel a chord straight through the limb.
+  const Ax=hitW.x, Ay=hitW.y, Az=hitW.z;
+  let Bx=Ax, By=Ay, Bz=Az;
+  if(prevW){
+    const jx=Ax-prevW.x, jy=Ay-prevW.y, jz=Az-prevW.z;
+    if(Math.sqrt(jx*jx+jy*jy+jz*jz) < Math.max(0.05, rM*5)){ Bx=prevW.x; By=prevW.y; Bz=prevW.z; }
   }
-  const behind = Math.max(0.05, rM*1.5);               // depth window past the touch point
-  const infront = Math.max(0.10, rM*2.5);              // nearer surfaces inside the circle (e.g. the arm) still catch spray
-  const camP = camera.position;
+  const abx=Ax-Bx, aby=Ay-By, abz=Az-Bz;
+  const abLen2 = abx*abx+aby*aby+abz*abz;
+  const cullR = reach + Math.sqrt(abLen2);
   let mnx=512, mny=512, mxx=-1, mxy=-1;
   for(let mi=0; mi<p.bodyMeshes.length; mi++){
     const mesh = p.bodyMeshes[mi];
     mesh.updateWorldMatrix(true, false);
     const e = mesh.matrixWorld.elements;
     for(const blk of BAKE.blocks[mi]){
-      // coarse cull: block centre (world) within a generous 3D reach of the view ray at hit depth
+      // coarse cull: block centre (world) beyond the stroke's 3D reach
       const bwx = e[0]*blk.cx + e[4]*blk.cy + e[8]*blk.cz + e[12];
       const bwy = e[1]*blk.cx + e[5]*blk.cy + e[9]*blk.cz + e[13];
       const bwz = e[2]*blk.cx + e[6]*blk.cy + e[10]*blk.cz + e[14];
-      // depth along view + radial distance from the cursor ray, both padded by block radius
-      const rx=bwx-camP.x, ry=bwy-camP.y, rz=bwz-camP.z;
-      const depth = rx*viewDirW.x + ry*viewDirW.y + rz*viewDirW.z;
-      if(depth < hitDist - infront - blk.r - 0.2 || depth > hitDist + behind + blk.r + 0.2) continue;
+      const cdx=bwx-Ax, cdy=bwy-Ay, cdz=bwz-Az, lim=cullR+blk.r;
+      if(cdx*cdx+cdy*cdy+cdz*cdz > lim*lim) continue;
       const tex = blk.tex;
       for(let i=0; i<tex.length; i++){
         const o = tex[i];
@@ -2241,29 +2242,26 @@ function screenDab(p, ndc, prevNdc, hitDist, rM, hex, viewDirW){
         const wx = e[0]*lx + e[4]*ly + e[8]*lz + e[12];
         const wy = e[1]*lx + e[5]*ly + e[9]*lz + e[13];
         const wz = e[2]*lx + e[6]*ly + e[10]*lz + e[14];
-        // depth gate
-        const dx_=wx-camP.x, dy_=wy-camP.y, dz_=wz-camP.z;
-        const d = dx_*viewDirW.x + dy_*viewDirW.y + dz_*viewDirW.z;
-        if(d < hitDist - infront || d > hitDist + behind) continue;
-        // back-face gate (lenient — only true away-facing texels are skipped)
+        // facing gate (lenient — reject only clearly away-facing; keeps grazing edges)
         const nx_=nrm[o*3], ny_=nrm[o*3+1], nz_=nrm[o*3+2];
         const wnx = e[0]*nx_ + e[4]*ny_ + e[8]*nz_;
         const wny = e[1]*nx_ + e[5]*ny_ + e[9]*nz_;
         const wnz = e[2]*nx_ + e[6]*ny_ + e[10]*nz_;
-        if(wnx*viewDirW.x + wny*viewDirW.y + wnz*viewDirW.z > 0.03) continue;
-        // screen-space circle test
-        _twp.set(wx, wy, wz).project(camera);
-        const sx = _twp.x*aspect, sy = _twp.y;
-        // point→segment distance in isotropic screen space (stroke = swept circle)
-        const abx=ax-bx, aby=ay-by;
-        const apx=sx-bx, apy=sy-by;
-        const len2 = abx*abx+aby*aby;
-        let tt = len2>1e-12 ? (apx*abx+apy*aby)/len2 : 0;
+        if(wnx*viewDirW.x + wny*viewDirW.y + wnz*viewDirW.z > 0.4) continue;
+        // depth guard: never reach THROUGH the surface onto a part behind it. A
+        // big brush on the arm must not bleed onto the torso ~8cm behind it. The
+        // hit point is the front-most surface, so cap how far past it (along view)
+        // a texel may be. Small brushes never approach this; only the largest do.
+        const bh = (wx-Ax)*viewDirW.x + (wy-Ay)*viewDirW.y + (wz-Az)*viewDirW.z;
+        if(bh > 0.05) continue;
+        // 3D distance from the texel to the stroke segment A–B
+        const px=wx-Bx, py=wy-By, pz=wz-Bz;
+        let tt = abLen2>1e-12 ? (px*abx+py*aby+pz*abz)/abLen2 : 0;
         tt = tt<0?0:(tt>1?1:tt);
-        const qx=apx-abx*tt, qy=apy-aby*tt;
-        const sd = Math.sqrt(qx*qx+qy*qy);
-        if(sd > rN + edgeN) continue;
-        let a = (rN - sd)/edgeN + 0.5;
+        const qx=px-abx*tt, qy=py-aby*tt, qz=pz-abz*tt;
+        const dd = Math.sqrt(qx*qx+qy*qy+qz*qz);
+        if(dd > reach) continue;
+        let a = (rM - dd)/soft + 0.5;
         if(a>1) a=1; if(a<=0) continue;
         const q = o*4;
         D[q]   += (col.r - D[q])*a;
@@ -2293,10 +2291,9 @@ function paintAtNDC(nx, ny, drag){
   if(!hits.length || hits[0].object.userData.pid !== G.myId){ lastDabN = null; return false; }
   const h = hits[0];
   const col = brush.erase ? BODY_BASE : brush.color;
-  screenDab(p, {x:nx, y:ny},
-            (drag && lastDabN && now()-lastDabT<0.5) ? lastDabN : null,
-            h.distance, brush.size/200, col, raycaster.ray.direction);
-  lastDabN = {x:nx, y:ny}; lastDabT = now();
+  const prev = (drag && lastDabN && now()-lastDabT<0.5) ? lastDabN : null;
+  surfaceDab(p, h.point, prev, brush.size/200, col, raycaster.ray.direction);
+  lastDabN = h.point.clone(); lastDabT = now();   // world hit point, for the next drag segment
   return true;
 }
 /* scroll = zoom while painting */
@@ -3580,6 +3577,14 @@ window.MC = {
   splatCount(){ return splats.length; },
   colliderAt(x,y,z){ const c=collides(x,y,z); return c?{min:[c.min.x,c.min.y,c.min.z],max:[c.max.x,c.max.y,c.max.z]}:null; },
   allCollidersNear(x,z,r){ return colliders.filter(c=>x>=c.min.x-r&&x<=c.max.x+r&&z>=c.min.z-r&&z<=c.max.z+r).map(c=>({min:[+c.min.x.toFixed(2),+c.min.y.toFixed(2),+c.min.z.toFixed(2)],max:[+c.max.x.toFixed(2),+c.max.y.toFixed(2),+c.max.z.toFixed(2)]})); },
+  // project each body-part mesh centre to NDC (debug aim helper for paint QA)
+  limbNDC(){
+    const p = me(); if(!p||!p.bodyMeshes) return null;
+    camera.updateMatrixWorld();
+    const NAMES=['torso','head','armL','armR','legL','legR'], v=new THREE.Vector3(), out={};
+    p.bodyMeshes.forEach((m,i)=>{ m.getWorldPosition(v); v.project(camera); out[NAMES[i]]=[+v.x.toFixed(3),+v.y.toFixed(3)]; });
+    return out;
+  },
 };
 </script>
 </body>
