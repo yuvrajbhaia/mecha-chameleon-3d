@@ -686,7 +686,7 @@ function makeCanvasTex(w,h,draw){
   return {tex, cv};
 }
 function addBox(w,h,d, x,y,z, opt={}){
-  // opt: {color, canvas:{w,h,draw,repeat}, rough, metal, ry, noCollide, noSample, noClimb, name}
+  // opt: {color, canvas:{w,h,draw,repeat}, rough, metal, ry, noCollide, noSample, name}
   const geo = new THREE.BoxGeometry(w,h,d);
   let mat, sample;
   if(opt.canvas){
@@ -706,12 +706,7 @@ function addBox(w,h,d, x,y,z, opt={}){
   m.userData.env = true;
   scene.add(m); staticMeshes.push(m);
   if(!opt.noCollide && !opt.ry){
-    // climbable defaults true (real walls/props) — hung art sets noClimb: it's a
-    // thin decorative surface, not a real wall, and only spans its own frame
-    // height. Climbing past its top edge would hand control to whatever solid
-    // wall sits behind it at a DIFFERENT depth, snapping the body deeper —
-    // exactly the "goes in and doesn't come back out" bug.
-    colliders.push({min:new THREE.Vector3(x-w/2,y-h/2,z-d/2), max:new THREE.Vector3(x+w/2,y+h/2,z+d/2), climbable:!opt.noClimb});
+    colliders.push({min:new THREE.Vector3(x-w/2,y-h/2,z-d/2), max:new THREE.Vector3(x+w/2,y+h/2,z+d/2)});
   }
   return m;
 }
@@ -761,6 +756,65 @@ function drawRug(cx,w,h){
   cx.fillStyle='#a04066';
   for(let i=0;i<40;i++){cx.fillRect(Math.random()*w,Math.random()*h,8,8);}
 }
+/* ---- wall textures (no flat/plain walls — every surface has real pattern,
+   so a hider's single paint colour never quite matches the whole backdrop) ---- */
+function drawConcrete(cx,w,h){
+  cx.fillStyle='#8b8d86'; cx.fillRect(0,0,w,h);
+  for(let i=0;i<40;i++){
+    cx.fillStyle=`rgba(60,58,52,${0.05+Math.random()*0.12})`;
+    cx.beginPath(); cx.arc(Math.random()*w,Math.random()*h,10+Math.random()*30,0,7); cx.fill();
+  }
+  cx.strokeStyle='rgba(40,40,36,0.35)'; cx.lineWidth=1.5;
+  for(let i=0;i<6;i++){
+    let x=Math.random()*w, y=Math.random()*h;
+    cx.beginPath(); cx.moveTo(x,y);
+    for(let j=0;j<4;j++){ x+=(Math.random()-0.5)*40; y+=(Math.random()-0.5)*40; cx.lineTo(x,y); }
+    cx.stroke();
+  }
+}
+function drawMetalPanel(cx,w,h){
+  cx.fillStyle='#5c6570'; cx.fillRect(0,0,w,h);
+  const rw=18;
+  for(let x=0;x<w;x+=rw){
+    cx.fillStyle='rgba(255,255,255,0.08)'; cx.fillRect(x,0,rw*0.4,h);
+    cx.fillStyle='rgba(0,0,0,0.15)'; cx.fillRect(x+rw*0.6,0,rw*0.4,h);
+  }
+  cx.fillStyle='#2b2f33';
+  for(let y=14;y<h;y+=44) for(let x=9;x<w;x+=rw*2){ cx.beginPath(); cx.arc(x,y,3,0,7); cx.fill(); }
+}
+function drawStucco(cx,w,h){
+  cx.fillStyle='#c9a227'; cx.fillRect(0,0,w,h);
+  for(let i=0;i<500;i++){
+    cx.fillStyle = Math.random()<0.5 ? 'rgba(255,255,255,0.05)' : 'rgba(60,40,10,0.06)';
+    cx.fillRect(Math.random()*w,Math.random()*h,2,2);
+  }
+  for(let i=0;i<15;i++){
+    cx.fillStyle='rgba(150,110,30,0.10)';
+    cx.beginPath(); cx.arc(Math.random()*w,Math.random()*h,20+Math.random()*30,0,7); cx.fill();
+  }
+}
+function drawWallpaperStripe(cx,w,h){
+  cx.fillStyle='#e4e0d6'; cx.fillRect(0,0,w,h);
+  const sw=22;
+  for(let x=0;x<w;x+=sw*2){ cx.fillStyle='rgba(150,170,160,0.35)'; cx.fillRect(x,0,sw,h); }
+  cx.strokeStyle='rgba(120,140,130,0.4)'; cx.lineWidth=2;
+  for(let y=0;y<h;y+=60){ cx.beginPath(); cx.moveTo(0,y); cx.lineTo(w,y); cx.stroke(); }
+}
+function drawPlank(cx,w,h){
+  cx.fillStyle='#7a5233'; cx.fillRect(0,0,w,h);
+  const pw=34;
+  for(let x=0;x<w;x+=pw){
+    cx.fillStyle=`rgba(40,25,10,${0.15+Math.random()*0.15})`; cx.fillRect(x,0,3,h);
+    cx.fillStyle=`rgba(255,210,160,${0.04+Math.random()*0.06})`; cx.fillRect(x+6,0,pw-12,h);
+  }
+}
+function drawCheckered(cx,w,h){
+  const n=8, sw=w/n, sh=h/n;
+  for(let y=0;y<n;y++) for(let x=0;x<n;x++){
+    cx.fillStyle = (x+y)%2===0 ? '#1c1c1c' : '#e8e8e0';
+    cx.fillRect(x*sw,y*sh,sw,sh);
+  }
+}
 
 /* ---- framed artwork: gold frame + real painting, eyedropper-sampleable ----
    Both boxes are REAL colliders (not noCollide) — this is what lets the existing
@@ -770,13 +824,19 @@ function drawRug(cx,w,h){
    the frame before anything stopped them. Now the deepest they can lean in is
    bounded by the painting's own ~0.24m thickness, matching "50% into the frame",
    and seekers correctly bump into hung art instead of phasing through it. */
+/* IMPORTANT — mount paintings CLOSE to their wall. The caller passes the frame's
+   own-axis coordinate; keep the protrusion small (front face ~0.14m off the wall)
+   so that when a hider climbs straight up a wall that has a painting on it, rising
+   past the frame's top edge only drops them onto the wall ~0.14m deeper — a barely
+   noticeable step, never the ~0.3m "sink behind the canvas and vanish" that a far-
+   protruding frame caused. Walls (incl. those with art) stay fully climbable. */
 function hangArt(url, w, h, x, y, z, axis){
   const fw = w+0.42, fh = h+0.42;   // gold frame sits behind, slightly larger
-  if(axis==='z') addBox(fw,fh,0.14, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32, noClimb:true});
-  else           addBox(0.14,fh,fw, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32, noClimb:true});
+  if(axis==='z') addBox(fw,fh,0.14, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32});
+  else           addBox(0.14,fh,fw, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32});
   const ch = Math.max(64, Math.round(512*h/w));
   const opts = {canvas:{w:512, h:ch, draw:(cx,W,H)=>{cx.fillStyle='#5a5044'; cx.fillRect(0,0,W,H);}},
-                rough:0.85, noClimb:true};
+                rough:0.85};
   const m = axis==='z' ? addBox(w,h,0.24, x,y,z, opts) : addBox(0.24,h,w, x,y,z, opts);
   const img = new Image();
   img.onload = ()=>{
@@ -814,8 +874,17 @@ function buildMap(){
   // outer walls, one camo family each
   addBox(MAP.w,H,WALL, 0,H/2,-HZ-WALL/2, {canvas:{w:512,h:256,draw:drawBrick,repeat:[3,2]}, name:'nWall'});  // far north brick
   addBox(MAP.w,H,WALL, 0,H/2, HZ+WALL/2, {canvas:{w:512,h:256,draw:drawTiles,repeat:[3,2]}, name:'sWall'});  // far south teal
-  addBox(WALL,H,MAP.d, -HX-WALL/2,H/2,0, {color:'#c9a227', name:'wWall'});                                    // west mustard
-  addBox(WALL,H,MAP.d,  HX+WALL/2,H/2,0, {color:'#e4e0d6', name:'eWall'});                                    // east off-white
+  // west + east walls: each used to be ONE flat colour spanning all 4 room-bands
+  // on their side — split into a per-room segment so no wall is a flat single
+  // colour a hider could paint-match easily, and neighbours don't repeat.
+  addBox(WALL,H,16, -HX-WALL/2,H/2,-24, {canvas:{w:256,h:256,draw:drawConcrete,repeat:[4,2]}, name:'wWall_garage'});
+  addBox(WALL,H,16, -HX-WALL/2,H/2, -8, {canvas:{w:256,h:256,draw:drawStucco,repeat:[3,2]}, name:'wWall_lounge'});
+  addBox(WALL,H,16, -HX-WALL/2,H/2,  8, {canvas:{w:256,h:256,draw:drawWallpaperStripe,repeat:[3,2]}, name:'wWall_study'});
+  addBox(WALL,H,16, -HX-WALL/2,H/2, 24, {canvas:{w:256,h:256,draw:drawConcrete,repeat:[4,2]}, name:'wWall_depot'});
+  addBox(WALL,H,16,  HX+WALL/2,H/2,-24, {canvas:{w:256,h:256,draw:drawMetalPanel,repeat:[4,2]}, name:'eWall_warehouse'});
+  addBox(WALL,H,16,  HX+WALL/2,H/2, -8, {canvas:{w:256,h:256,draw:drawWallpaperStripe,repeat:[3,2]}, name:'eWall_gallery'});
+  addBox(WALL,H,16,  HX+WALL/2,H/2,  8, {canvas:{w:256,h:256,draw:drawPlank,repeat:[3,2]}, name:'eWall_kitchen'});
+  addBox(WALL,H,16,  HX+WALL/2,H/2, 24, {canvas:{w:256,h:256,draw:drawMetalPanel,repeat:[4,2]}, name:'eWall_junkyard'});
 
   // apartment boundary walls (old exterior, now interior with doorways)
   // north (z=-16, brick): doorways at x[-20,-17] and x[-7,-4]
@@ -827,24 +896,27 @@ function buildMap(){
   addBox(16,H,WALL,   7,H/2, AZ, {canvas:{w:512,h:256,draw:drawTiles,repeat:[2,2]}, name:'aSw2'});
   addBox(4, H,WALL,  20,H/2, AZ, {canvas:{w:512,h:256,draw:drawTiles,repeat:[1,2]}, name:'aSw3'});
   // north band partition (x=0, garage|warehouse): doorway at z[-26,-23]
-  const plasterN = {color:'#cfc8ba'};
+  const plasterN = {canvas:{w:256,h:256,draw:drawConcrete,repeat:[2,4]}};
   addBox(WALL,H,6, 0,H/2,-29,   plasterN);
   addBox(WALL,H,7, 0,H/2,-19.5, plasterN);
   // south band partitions (x=±7.33, depot|arcade|junkyard): doorways at z[22,25]
-  for(const px of [-7.33, 7.33]){
-    addBox(WALL,H,6, px,H/2,19,   plasterN);
-    addBox(WALL,H,7, px,H/2,28.5, plasterN);
-  }
+  const plasterS1 = {canvas:{w:256,h:256,draw:drawMetalPanel,repeat:[2,4]}};
+  const plasterS2 = {canvas:{w:256,h:256,draw:drawConcrete,repeat:[2,4]}};
+  addBox(WALL,H,6, -7.33,H/2,19,   plasterS1);
+  addBox(WALL,H,7, -7.33,H/2,28.5, plasterS1);
+  addBox(WALL,H,6,  7.33,H/2,19,   plasterS2);
+  addBox(WALL,H,7,  7.33,H/2,28.5, plasterS2);
 
   // interior wall A (vertical, x=0) — doorways at z:-14..-11 and z:11..14
-  const plaster = {color:'#cfc8ba'};
+  const plaster = {canvas:{w:256,h:256,draw:drawStucco,repeat:[1,6]}};
   addBox(WALL,H,2,  0,H/2,-15, plaster);
   addBox(WALL,H,22, 0,H/2, 0,  plaster);
   addBox(WALL,H,2,  0,H/2, 15, plaster);
   // interior wall B (horizontal, z=0) — doorways at x:-20..-17 and x:17..20
-  addBox(2,H,WALL,  -21,H/2,0, plaster);
-  addBox(34,H,WALL,  0, H/2,0, plaster);
-  addBox(2,H,WALL,   21,H/2,0, plaster);
+  const plasterB = {canvas:{w:256,h:256,draw:drawWallpaperStripe,repeat:[9,1]}};
+  addBox(2,H,WALL,  -21,H/2,0, plasterB);
+  addBox(34,H,WALL,  0, H/2,0, plasterB);
+  addBox(2,H,WALL,   21,H/2,0, plasterB);
   // door frames (dark trim) so gaps read as doorways
   const trim = {color:'#3a3630', noCollide:true, noShadow:true};
   addBox(0.6,H,0.6, 0,H/2,-11, trim); addBox(0.6,H,0.6, 0,H/2,-14, trim);
@@ -853,8 +925,8 @@ function buildMap(){
   addBox(0.6,H,0.6,  17,H/2,0, trim); addBox(0.6,H,0.6,  20,H/2,0, trim);
 
   /* ---- NW: LOUNGE ---- */
-  hangArt(ART.mona, 3.0,4.4, -12,3.0, -AZ+0.35,'z');   // Mona Lisa on north wall
-  hangArt(ART.tie,  2.2,3.0, -HX+0.35,3.0, -8,'x');    // west wall, clear of the beanbag/barrels
+  hangArt(ART.mona, 3.0,4.4, -12,3.0, -AZ+0.22,'z');   // Mona Lisa on north wall (recessed close to wall)
+  hangArt(ART.tie,  2.2,3.0, -HX+0.02,3.0, -8,'x');    // west wall, clear of the beanbag/barrels
   addBox(4.6,0.9,1.8, -8,0.45,-3, {color:'#3d6b8f', name:'sofa'});      // sofa
   addBox(4.6,1.1,0.5, -8,1.35,-3.8, {color:'#356082'});
   addBox(0.5,0.9,1.8, -10.3,0.9,-3, {color:'#356082'});
@@ -864,9 +936,9 @@ function buildMap(){
   plant3D(-3,-13,1.1);
 
   /* ---- NE: GALLERY ---- */
-  hangArt(ART.starry, 5.2,4.0, 9,3.1, -AZ+0.35,'z');   // Starry Night north
-  hangArt(ART.wave,   5.4,3.8, HX-0.35,3.0, -9,'x');   // Great Wave east
-  hangArt(ART.sketch, 3.4,3.8, HX-0.35,3.0, -2,'x');   // hand-drawn self-portrait, east wall (clear of the sign cluster on the north wall)
+  hangArt(ART.starry, 5.2,4.0, 9,3.1, -AZ+0.22,'z');   // Starry Night north
+  hangArt(ART.wave,   5.4,3.8, HX-0.02,3.0, -9,'x');   // Great Wave east
+  hangArt(ART.sketch, 3.4,3.8, HX-0.02,3.0, -2,'x');   // hand-drawn self-portrait, east wall (clear of the sign cluster on the north wall)
   addBox(2,2,2, 15,1,-4, {canvas:{w:128,h:128,draw:drawWood}, name:'crate'});
   addBox(2,2,2, 17.2,1,-3.2, {canvas:{w:128,h:128,draw:drawWood}});
   addBox(1.6,1.6,1.6, 16,2.9,-3.7, {canvas:{w:128,h:128,draw:drawWood}});
@@ -884,8 +956,8 @@ function buildMap(){
   plant3D(-19,13,1.3);
 
   /* ---- SE: KITCHEN ---- */
-  hangArt(ART.pearl, 3.2,3.8, 11,3.0, AZ-0.35,'z');   // Pearl Earring south
-  hangArt(ART.comb,  2.4,2.6, HX-0.35,3.0, 7,'x');    // east wall, between counter and planter
+  hangArt(ART.pearl, 3.2,3.8, 11,3.0, AZ-0.22,'z');   // Pearl Earring south
+  hangArt(ART.comb,  2.4,2.6, HX-0.02,3.0, 7,'x');    // east wall, between counter and planter
   addBox(9,0.06,6, 12,0.03,9, {canvas:{w:360,h:240,draw:drawRug}, noCollide:true, noShadow:true, name:'rug2'});
   addBox(3.4,1.5,1.6, 17,0.75,4, {color:'#d8d2c4', name:'counter'});   // counter island
   addBox(1.6,1.2,1.6, 19,0.6,13, {color:'#8a5a33', name:'planter'});
@@ -1271,6 +1343,41 @@ function propCone(x, z) {
   propSolid(x, z, 0.3, 0.3, 0.9);
 }
 
+/* ---- tiny ground clutter (banana, rocks) — purely decorative, no collider ---- */
+function propBanana(x, z) {
+  const g = new THREE.Group();
+  g.position.set(x, 0.1, z);
+  g.rotation.y = propRand() * 7;
+  const mat = new THREE.MeshStandardMaterial({ color: '#f2d43d', roughness: 0.5 });
+  const body = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.085, 8, 16, Math.PI * 0.62), mat);
+  body.rotation.x = Math.PI / 2;
+  body.castShadow = true; body.receiveShadow = true;
+  g.add(body);
+  const tipMat = new THREE.MeshStandardMaterial({ color: '#4a3218', roughness: 0.6 });
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.1, 6), tipMat);
+  tip.position.set(0.3, 0, 0);
+  tip.rotation.z = -Math.PI / 2;
+  g.add(tip);
+  g.traverse(o => { o.userData.env = true; o.userData.sample = { type: 'flat', color: '#f2d43d' }; });
+  scene.add(g); staticMeshes.push(g);
+}
+function propRock(x, z, scale) {
+  const geo = new THREE.IcosahedronGeometry(0.26 * (scale || 1), 0);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const j = 0.8 + propRand() * 0.35;
+    pos.setXYZ(i, pos.getX(i) * j, pos.getY(i) * j, pos.getZ(i) * j);
+  }
+  geo.computeVertexNormals();
+  const color = propRand() < 0.5 ? '#8a8a86' : '#6e6a63';
+  const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, roughness: 0.95, flatShading: true }));
+  m.position.set(x, 0.16 * (scale || 1), z);
+  m.rotation.set(propRand() * 6, propRand() * 6, propRand() * 6);
+  m.castShadow = true; m.receiveShadow = true;
+  m.userData.env = true; m.userData.sample = { type: 'flat', color };
+  scene.add(m); staticMeshes.push(m);
+}
+
 function propBeanBag(x, z, color) {
   const m = new THREE.Mesh(
     new THREE.SphereGeometry(0.75, 18, 12),
@@ -1408,6 +1515,7 @@ function buildProps() {
   propCone(-5.2, -8.2);
   addBox(1.1, 1.1, 1.1, -2.3, 0.55, -5.6, crateOpt());
   propBeanBag(-13.0, -1.6, '#ff8ac2');
+  propBanana(-17, -6);
 
   // NE gallery
   propBarrel(5.0, -6.0, 0.55, '#ffd23f');
@@ -1417,6 +1525,7 @@ function buildProps() {
   propCone(12.1, -11.2);
   propCone(7.0, -1.9);
   propLadder(15.6, -14.7, 0);                      // leans onto the sign wall
+  propRock(10, -8, 1.1);
 
   // SW study
   propBarrel(-14.5, 2.6, 0.55, '#9d4edd');
@@ -1426,6 +1535,7 @@ function buildProps() {
   propCone(-4.6, 10.4);
   addBox(1.0, 1.0, 1.0, -8.6, 0.5, 13.9, crateOpt());
   propBeanBag(-16.9, 7.2, '#3ef26e');
+  propRock(-3, 3, 0.9); propRock(-10, 11, 1.3);
 
   // SE kitchen
   propBarrel(3.6, 4.3, 0.55, '#2ec27e');
@@ -1436,6 +1546,7 @@ function buildProps() {
   propCone(13.1, 13.3);
   addBox(1.2, 1.2, 1.2, 20.6, 0.6, 8.3, crateOpt());
   propBeanBag(5.7, 14.6, '#ff5c39');
+  propBanana(14, 8);
 }
 // ============================================================================
 // WING FRAGMENT — furnishes 5 rooms: GARAGE, WAREHOUSE, TAXI DEPOT, ARCADE,
@@ -1862,12 +1973,13 @@ function wingBench(x, z) {
 
 // GARAGE: x -21..-1, z -31..-17
 function wingGarage() {
+  addBox(19,0.06,13, -11,0.03,-24, {canvas:{w:256,h:256,draw:drawCheckered,repeat:[5,3]}, noCollide:true, noShadow:true, name:'garageFloor'});
   wingCar(-16, -27, 0, 0xd7263d);          // red sedan
   wingCar(-10, -21.5, Math.PI / 2, 0x1b6ef3); // blue sedan
   wingCar(-16, -20, 0, 0x1faa59);          // green sedan
   wingBench(-19.65, -24);                  // workbench on west wall
-  hangArt(ART.suppandi, 1.9,4.6, -5,3.0, -32.2+0.35,'z');  // cartoon poster, north wall (clear of the 3 cars)
-  hangArt(ART.face, 1.6,3.5, -2,3.0, -32.2+0.35,'z');      // north wall, clear of suppandi
+  hangArt(ART.suppandi, 1.9,4.6, -5,3.0, -32.2+0.22,'z');  // cartoon poster, north wall (clear of the 3 cars)
+  hangArt(ART.face, 1.6,3.5, -2,3.0, -32.2+0.22,'z');      // north wall, clear of suppandi
 }
 
 // WAREHOUSE: x 1..21, z -31..-17
@@ -1879,7 +1991,7 @@ function wingWarehouse() {
   wingForklift(6, -24);
   wingSpool(18.7, -21, 0.9, 1.4, 0xc9863f);
   wingSpool(17.6, -24.6, 0.7, 1.1, 0xd9a05b);
-  hangArt(ART.lionchimp, 4.2,2.4, 22.2-0.35,3.0, -27,'x');  // lion & chimp painting, east wall
+  hangArt(ART.lionchimp, 4.2,2.4, 22.2-0.22,3.0, -27,'x');  // lion & chimp painting, east wall
 }
 
 // TAXI DEPOT: x -21..-8.4, z 17..31 (east doorway z 22..25 kept clear)
@@ -1891,8 +2003,8 @@ function wingTaxiDepot() {
   wingBarrier(-12, 22.6, true);
   wingBarrier(-11, 30.2, true);
   wingBarrier(-10.5, 27.5, false);
-  hangArt(ART.mirror1, 1.6,3.5, -MAP.w/2+0.35,3.0, 18, 'x');   // west wall, clear of the van (z 24)
-  hangArt(ART.mirror2, 1.6,3.5, -MAP.w/2+0.35,3.0, 30, 'x');
+  hangArt(ART.mirror1, 1.6,3.5, -MAP.w/2+0.02,3.0, 18, 'x');   // west wall, clear of the van (z 24)
+  hangArt(ART.mirror2, 1.6,3.5, -MAP.w/2+0.02,3.0, 30, 'x');
 }
 
 // ARCADE: x -6.3..6.3, z 17..31
@@ -1904,7 +2016,7 @@ function wingArcadeRoom() {
   wingPoolTable(0, 24);
   wingVending(-5.7, 19.5);                 // west wall, faces east
   wingClaw(5.65, 19.5);                    // east wall
-  hangArt(ART.jesus, 1.8,2.0, -7.33+0.35,3.0, 27,'x');  // small framed piece, west wall
+  hangArt(ART.jesus, 1.8,2.0, -7.33+0.22,3.0, 27,'x');  // small framed piece, arcade partition wall
 }
 
 // JUNKYARD: x 8.4..21, z 17..31
@@ -1915,8 +2027,9 @@ function wingJunkyard() {
   wingCratePile(19.8, 20.2);               // south-east corner
   wingBarrels(10.2, 29.4);                 // north-west corner
   wingWreck(16, 23.5);                     // flipped-ish rusty car, middle
-  hangArt(ART.panik, 2.4,3.15, 19,3.0, MAP.d/2+WALL/2-0.35, 'z');  // south wall, clear of the tire stack
-  hangArt(ART.dark,  1.6,3.5,  9,3.0, MAP.d/2+WALL/2-0.35, 'z');   // south wall, clear of the barrels
+  propRock(12.5, 24, 1.4); propRock(17.5, 22, 1.0); propRock(9.5, 22.5, 0.8);
+  hangArt(ART.panik, 2.4,3.15, 19,3.0, MAP.d/2+WALL/2-0.22, 'z');  // south wall, clear of the tire stack
+  hangArt(ART.dark,  1.6,3.5,  9,3.0, MAP.d/2+WALL/2-0.22, 'z');   // south wall, clear of the barrels
 }
 
 // ---------- ENTRY ----------
@@ -2706,22 +2819,7 @@ function moveWalk(dt){   // grounded movement with collision — seeker FPS, or 
 const CLIMB_SPD = 2.6;
 function touchingWall(){
   const y0 = ME.pos.y + 0.2, y1 = ME.pos.y + 1.8;
-  // hung art sits almost flush against the real wall behind it, so that wall is
-  // ALSO within climb reach whenever you're near a painting. Climbing straight up
-  // stays legal past the painting's own (shorter) height, at which point the only
-  // remaining collider is the deeper wall — resolveEmbed then snaps you from the
-  // painting's shallow depth to the wall's, a jarring "sink into the frame and
-  // don't come back out" jump. So: any non-climbable (painting/frame) collider
-  // nearby blocks climbing outright, at any height — you don't scale a framed
-  // picture, full stop.
   for(const c of colliders){
-    if(c.climbable!==false) continue;
-    const dx = Math.max(c.min.x - ME.pos.x, ME.pos.x - c.max.x, 0);
-    const dz = Math.max(c.min.z - ME.pos.z, ME.pos.z - c.max.z, 0);
-    if(Math.hypot(dx, dz) < 0.55) return false;
-  }
-  for(const c of colliders){
-    if(c.climbable===false) continue;
     if(c.max.y < y0 || c.min.y > y1) continue;
     if(c.max.y - c.min.y < 1.2) continue;                 // low props aren't climbable walls
     const dx = Math.max(c.min.x - ME.pos.x, ME.pos.x - c.max.x, 0);
