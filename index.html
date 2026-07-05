@@ -2677,17 +2677,42 @@ function moveHiderClimb(dt){
 }
 /* 50% embed rule: the body's CENTER may reach a surface but never pass inside it.
    Body radius ≈0.3, so at the limit half of you is buried — from no angle can
-   anyone see "through" you, and you can't phase into the next room. */
+   anyone see "through" you, and you can't phase into the next room.
+   POSE-AWARE: a single mid-height point only matches a standing body. Poses
+   like flat/ball/sit/handstand reorient or relocate the whole body (see
+   POSES[].rx/rz/dy), so we sample points up the spine in the SAME local
+   frame the renderer rotates (applyPoseFrame's quaternion), and resolve
+   each one. That's what actually stops a laid-down or curled pose from
+   sliding into a wall/car that a single vertical point would miss. */
+const EMBED_SPINE = [0.15, 0.55, 0.95, 1.35, 1.75, 2.15];   // local y, feet→head
+const _embQ = new THREE.Quaternion(), _embE = new THREE.Euler(0,0,0,'YXZ'), _embV = new THREE.Vector3();
 function resolveEmbed(){
-  const cx_ = ME.pos.x, cz = ME.pos.z, cy = ME.pos.y + 1.0;   // mid-body point
-  for(const c of colliders){
-    if(cx_>c.min.x && cx_<c.max.x && cz>c.min.z && cz<c.max.z && cy>c.min.y && cy<c.max.y){
-      const dxl=cx_-c.min.x, dxr=c.max.x-cx_, dzl=cz-c.min.z, dzr=c.max.z-cz,
-            dyb=cy-c.min.y, dyt=c.max.y-cy;
-      const m = Math.min(dxl,dxr,dzl,dzr,dyb,dyt);
-      if(m===dxl) ME.pos.x=c.min.x; else if(m===dxr) ME.pos.x=c.max.x;
-      else if(m===dzl) ME.pos.z=c.min.z; else if(m===dzr) ME.pos.z=c.max.z;
-      else if(m===dyt) ME.pos.y=c.max.y-1.0; else ME.pos.y=Math.max(0, c.min.y-1.0);
+  const p = me(); const P = POSES[p.pose] || POSES.stand;
+  _embE.set(P.rx, ME.yaw + Math.PI, P.rz); _embQ.setFromEuler(_embE);
+  for(let pass=0; pass<2; pass++){
+    for(const ly of EMBED_SPINE){
+      _embV.set(0, ly, 0).applyQuaternion(_embQ);
+      const cx_ = ME.pos.x + _embV.x, cz = ME.pos.z + _embV.z, cy = ME.pos.y + P.dy + _embV.y;
+      for(const c of colliders){
+        // skip the world-bounding floor/ceiling shell — it spans the whole map, not an
+        // obstacle, and ground clamping (elsewhere) already keeps the root on/above it.
+        // Without this, crouched poses (ball/sit) that sink below y=0 by design get
+        // shoved back up by this same loop mistaking the floor for something to escape.
+        if(c.max.x-c.min.x >= MAP.w-2 && c.max.z-c.min.z >= MAP.d-2) continue;
+        if(cx_>c.min.x && cx_<c.max.x && cz>c.min.z && cz<c.max.z && cy>c.min.y && cy<c.max.y){
+          const dxl=cx_-c.min.x, dxr=c.max.x-cx_, dzl=cz-c.min.z, dzr=c.max.z-cz;
+          // vertical escape only counts if it doesn't require going through the floor/ceiling —
+          // a ground-level box sits right where a low sample point already is, so "push down"
+          // can look like the cheapest margin while actually being a no-op against the floor.
+          const newYDown = c.min.y-P.dy-_embV.y, newYUp = c.max.y-P.dy-_embV.y;
+          const dyb = newYDown>=0 ? cy-c.min.y : Infinity;
+          const dyt = newYUp<=MAP.h-0.3 ? c.max.y-cy : Infinity;
+          const m = Math.min(dxl,dxr,dzl,dzr,dyb,dyt);
+          if(m===dxl) ME.pos.x=c.min.x-_embV.x; else if(m===dxr) ME.pos.x=c.max.x-_embV.x;
+          else if(m===dzl) ME.pos.z=c.min.z-_embV.z; else if(m===dzr) ME.pos.z=c.max.z-_embV.z;
+          else if(m===dyb) ME.pos.y=newYDown; else ME.pos.y=newYUp;
+        }
+      }
     }
   }
 }
@@ -3539,6 +3564,8 @@ window.MC = {
   render(){ renderer.render(scene, camera); },
   shoot(){ tryShoot(); },
   objPos(id){ const p=G.players[id]; return p&&p.obj?[p.obj.position.x,p.obj.position.y,p.obj.position.z]:null; },
+  bodyBBox(id){ const p=G.players[id]; if(!p||!p.obj) return null; const b=new THREE.Box3().setFromObject(p.obj); return {min:[+b.min.x.toFixed(3),+b.min.y.toFixed(3),+b.min.z.toFixed(3)], max:[+b.max.x.toFixed(3),+b.max.y.toFixed(3),+b.max.z.toFixed(3)]}; },
+  spineWorld(){ const p=me(); const P=POSES[p.pose]||POSES.stand; const q=new THREE.Quaternion().setFromEuler(new THREE.Euler(P.rx, ME.yaw+Math.PI, P.rz, 'YXZ')); return EMBED_SPINE.map(ly=>{ const v=new THREE.Vector3(0,ly,0).applyQuaternion(q); return [+(ME.pos.x+v.x).toFixed(3), +(ME.pos.y+P.dy+v.y).toFixed(3), +(ME.pos.z+v.z).toFixed(3)]; }); },
   aimAt(x,y,z){ const e=camera.position; ME.yaw=Math.atan2(-(x-e.x),-(z-e.z)); ME.pitch=Math.atan2(y-e.y,Math.hypot(x-e.x,z-e.z)); },
   rayHit(){ raycaster.setFromCamera(_center,camera); const t=[]; for(const id in G.players){const q=G.players[id]; if(id!==G.myId&&q.obj&&!q.caught)t.push(q.obj);} const h=raycaster.intersectObjects([...t,...staticMeshes],true); return h.length?{pid:h[0].object.userData.pid||null,name:h[0].object.userData.name||h[0].object.geometry.type,dist:+h[0].distance.toFixed(2),pt:[+h[0].point.x.toFixed(2),+h[0].point.y.toFixed(2),+h[0].point.z.toFixed(2)]}:null; },
   camPos(){ return [+camera.position.x.toFixed(2),+camera.position.y.toFixed(2),+camera.position.z.toFixed(2)]; },
