@@ -755,14 +755,21 @@ function drawRug(cx,w,h){
   for(let i=0;i<40;i++){cx.fillRect(Math.random()*w,Math.random()*h,8,8);}
 }
 
-/* ---- framed artwork: gold frame + real painting, eyedropper-sampleable ---- */
+/* ---- framed artwork: gold frame + real painting, eyedropper-sampleable ----
+   Both boxes are REAL colliders (not noCollide) — this is what lets the existing
+   50%-embed rule (resolveEmbed, see p5_game.js) apply to the painting's own thin
+   surface. With noCollide, a hider had nothing to push against until the solid
+   wall behind it, 0.3-0.4m further back — so they sank almost entirely through
+   the frame before anything stopped them. Now the deepest they can lean in is
+   bounded by the painting's own ~0.24m thickness, matching "50% into the frame",
+   and seekers correctly bump into hung art instead of phasing through it. */
 function hangArt(url, w, h, x, y, z, axis){
   const fw = w+0.42, fh = h+0.42;   // gold frame sits behind, slightly larger
-  if(axis==='z') addBox(fw,fh,0.14, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32, noCollide:true});
-  else           addBox(0.14,fh,fw, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32, noCollide:true});
+  if(axis==='z') addBox(fw,fh,0.14, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32});
+  else           addBox(0.14,fh,fw, x,y,z, {color:'#b58a2e', metal:0.7, rough:0.32});
   const ch = Math.max(64, Math.round(512*h/w));
   const opts = {canvas:{w:512, h:ch, draw:(cx,W,H)=>{cx.fillStyle='#5a5044'; cx.fillRect(0,0,W,H);}},
-                rough:0.85, noCollide:true};
+                rough:0.85};
   const m = axis==='z' ? addBox(w,h,0.24, x,y,z, opts) : addBox(0.24,h,w, x,y,z, opts);
   const img = new Image();
   img.onload = ()=>{
