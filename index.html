@@ -237,9 +237,9 @@ select{width:100%; background:#0d1219; color:var(--ink); border:1px solid var(--
     <div id="lobbyPlayers"></div>
     <div class="setrow" id="hostSettings">
       <div><label class="fld">Prep</label>
-        <select id="setPrep"><option value="45">45s</option><option value="75" selected>75s</option><option value="90">90s</option></select></div>
+        <select id="setPrep"><option value="45">45s</option><option value="75" selected>75s</option><option value="90">90s</option><option value="120">2 min</option><option value="150">2.5 min</option><option value="180">3 min</option></select></div>
       <div><label class="fld">Hunt</label>
-        <select id="setHunt"><option value="180">3 min</option><option value="240" selected>4 min</option><option value="300">5 min</option></select></div>
+        <select id="setHunt"><option value="180">3 min</option><option value="240" selected>4 min</option><option value="300">5 min</option><option value="360">6 min</option><option value="480">8 min</option><option value="600">10 min</option></select></div>
       <div><label class="fld">Mode</label>
         <select id="setMode"><option value="classic" selected>Classic</option><option value="infection">Infection</option></select></div>
     </div>
@@ -645,7 +645,6 @@ const colliders = [];      // {min:THREE.Vector3, max:THREE.Vector3}
 const MAP = { w:44, d:64, h:6.5 };   // full building (x:-22..22, z:-32..32)
 const WALL = 0.4;
 const AZ = 16;                        // the original apartment wing spans z:-16..16
-const PB_D = 16;                      // photo booth room depth, tacked onto the SOUTH end only
 const SPAWN_SEEKER = new THREE.Vector3(-19, 0, -13);
 const SPAWN_HIDER  = new THREE.Vector3(0, 0, 0);
 // 9 rooms: apartment (lounge, gallery, study, kitchen) + north band (garage,
@@ -804,20 +803,14 @@ function plant3D(x,z,scale){
 /* ---- THE APARTMENT (4 rooms) ---- */
 function buildMap(){
   const HX = MAP.w/2, HZ = MAP.d/2, H = MAP.h;
-  // south end is extended PB_D further out for the photo booth room, so the
-  // building's total z-span is asymmetric: -HZ (north) .. S2 (south)
-  const S2 = HZ + PB_D, fullD = HZ + S2, fullCz = (S2-HZ)/2;
-  // floor + ceiling (whole building, now including the photo booth extension)
-  addBox(MAP.w,0.4,fullD, 0,-0.2,fullCz, {canvas:{w:256,h:256,draw:drawWood,repeat:[7,10]}, name:'floor'});
-  addBox(MAP.w,0.4,fullD, 0,H+0.2,fullCz, {color:'#171b22', noShadow:true});
+  // floor + ceiling (whole building)
+  addBox(MAP.w,0.4,MAP.d, 0,-0.2,0, {canvas:{w:256,h:256,draw:drawWood,repeat:[7,10]}, name:'floor'});
+  addBox(MAP.w,0.4,MAP.d, 0,H+0.2,0, {color:'#171b22', noShadow:true});
   // outer walls, one camo family each
   addBox(MAP.w,H,WALL, 0,H/2,-HZ-WALL/2, {canvas:{w:512,h:256,draw:drawBrick,repeat:[3,2]}, name:'nWall'});  // far north brick
-  addBox(MAP.w,H,WALL, 0,H/2, S2+WALL/2, {canvas:{w:512,h:256,draw:drawTiles,repeat:[3,2]}, name:'sWall'});  // far south teal (now behind the photo booth)
-  addBox(WALL,H,fullD, -HX-WALL/2,H/2,fullCz, {color:'#c9a227', name:'wWall'});                               // west mustard
-  addBox(WALL,H,fullD,  HX+WALL/2,H/2,fullCz, {color:'#e4e0d6', name:'eWall'});                               // east off-white
-  // old south boundary (z=HZ) is now an interior wall into the photo booth room — centred doorway x:-3..3
-  addBox(19,H,WALL, -12.5,H/2,HZ, {canvas:{w:512,h:256,draw:drawTiles,repeat:[2,2]}, name:'pbW1'});
-  addBox(19,H,WALL,  12.5,H/2,HZ, {canvas:{w:512,h:256,draw:drawTiles,repeat:[2,2]}, name:'pbW2'});
+  addBox(MAP.w,H,WALL, 0,H/2, HZ+WALL/2, {canvas:{w:512,h:256,draw:drawTiles,repeat:[3,2]}, name:'sWall'});  // far south teal
+  addBox(WALL,H,MAP.d, -HX-WALL/2,H/2,0, {color:'#c9a227', name:'wWall'});                                    // west mustard
+  addBox(WALL,H,MAP.d,  HX+WALL/2,H/2,0, {color:'#e4e0d6', name:'eWall'});                                    // east off-white
 
   // apartment boundary walls (old exterior, now interior with doorways)
   // north (z=-16, brick): doorways at x[-20,-17] and x[-7,-4]
@@ -856,6 +849,7 @@ function buildMap(){
 
   /* ---- NW: LOUNGE ---- */
   hangArt(ART.mona, 3.0,4.4, -12,3.0, -AZ+0.35,'z');   // Mona Lisa on north wall
+  hangArt(ART.tie,  2.2,3.0, -HX+0.35,3.0, -8,'x');    // west wall, clear of the beanbag/barrels
   addBox(4.6,0.9,1.8, -8,0.45,-3, {color:'#3d6b8f', name:'sofa'});      // sofa
   addBox(4.6,1.1,0.5, -8,1.35,-3.8, {color:'#356082'});
   addBox(0.5,0.9,1.8, -10.3,0.9,-3, {color:'#356082'});
@@ -886,6 +880,7 @@ function buildMap(){
 
   /* ---- SE: KITCHEN ---- */
   hangArt(ART.pearl, 3.2,3.8, 11,3.0, AZ-0.35,'z');   // Pearl Earring south
+  hangArt(ART.comb,  2.4,2.6, HX-0.35,3.0, 7,'x');    // east wall, between counter and planter
   addBox(9,0.06,6, 12,0.03,9, {canvas:{w:360,h:240,draw:drawRug}, noCollide:true, noShadow:true, name:'rug2'});
   addBox(3.4,1.5,1.6, 17,0.75,4, {color:'#d8d2c4', name:'counter'});   // counter island
   addBox(1.6,1.2,1.6, 19,0.6,13, {color:'#8a5a33', name:'planter'});
@@ -894,7 +889,6 @@ function buildMap(){
 
   if(typeof buildProps==='function') buildProps();   // sign walls + prop clutter
   if(typeof buildWing==='function') buildWing();     // garage/warehouse/depot/arcade/junkyard
-  if(typeof buildPhotoBooth==='function') buildPhotoBooth();   // 6th room: photo wall, south of the arcade wing
 }
 /* embedded public-domain artworks (Wikimedia Commons) */
 const ART = {
@@ -1868,6 +1862,7 @@ function wingGarage() {
   wingCar(-16, -20, 0, 0x1faa59);          // green sedan
   wingBench(-19.65, -24);                  // workbench on west wall
   hangArt(ART.suppandi, 1.9,4.6, -5,3.0, -32.2+0.35,'z');  // cartoon poster, north wall (clear of the 3 cars)
+  hangArt(ART.face, 1.6,3.5, -2,3.0, -32.2+0.35,'z');      // north wall, clear of suppandi
 }
 
 // WAREHOUSE: x 1..21, z -31..-17
@@ -1891,6 +1886,8 @@ function wingTaxiDepot() {
   wingBarrier(-12, 22.6, true);
   wingBarrier(-11, 30.2, true);
   wingBarrier(-10.5, 27.5, false);
+  hangArt(ART.mirror1, 1.6,3.5, -MAP.w/2+0.35,3.0, 18, 'x');   // west wall, clear of the van (z 24)
+  hangArt(ART.mirror2, 1.6,3.5, -MAP.w/2+0.35,3.0, 30, 'x');
 }
 
 // ARCADE: x -6.3..6.3, z 17..31
@@ -1913,6 +1910,8 @@ function wingJunkyard() {
   wingCratePile(19.8, 20.2);               // south-east corner
   wingBarrels(10.2, 29.4);                 // north-west corner
   wingWreck(16, 23.5);                     // flipped-ish rusty car, middle
+  hangArt(ART.panik, 2.4,3.15, 19,3.0, MAP.d/2+WALL/2-0.35, 'z');  // south wall, clear of the tire stack
+  hangArt(ART.dark,  1.6,3.5,  9,3.0, MAP.d/2+WALL/2-0.35, 'z');   // south wall, clear of the barrels
 }
 
 // ---------- ENTRY ----------
@@ -1923,63 +1922,6 @@ function buildWing() {
   wingTaxiDepot();
   wingArcadeRoom();
   wingJunkyard();
-}
-
-// ============================================================================
-// PHOTO BOOTH — 6th room, x -22..22, z 32..48, south of the arcade (doorway
-// at x -3..3 in the old south boundary wall). A hangout corner for the
-// group's own photos + a welcome tag.
-// ============================================================================
-function propDrawGraffiti(cx, W, H, txt) {
-  cx.fillStyle = '#7a2f52'; cx.fillRect(0, 0, W, H);
-  let seed = 918273;
-  const rnd = () => { seed = (seed*1103515245 + 12345) & 0x7fffffff; return seed/0x7fffffff; };
-  const dots = ['#ff2fa0', '#ffd23f', '#00e5ff'];
-  for (let i = 0; i < 70; i++) {
-    cx.globalAlpha = 0.35 + rnd()*0.4;
-    cx.fillStyle = dots[i % dots.length];
-    cx.beginPath(); cx.arc(rnd()*W, rnd()*H, 1.5+rnd()*3, 0, 7); cx.fill();
-  }
-  cx.globalAlpha = 1;
-  cx.textAlign = 'center'; cx.textBaseline = 'middle';
-  const fs = Math.min(W/(txt.length*0.56), H*0.44);
-  cx.font = 'italic 900 ' + Math.floor(fs) + 'px Arial, sans-serif';
-  cx.save();
-  cx.translate(W/2, H*0.42); cx.rotate(-0.035);
-  cx.lineWidth = fs*0.16; cx.strokeStyle = '#171920'; cx.strokeText(txt, 0, 0);
-  cx.fillStyle = '#ffd23f'; cx.fillText(txt, 0, 0);
-  cx.restore();
-  cx.fillStyle = '#171920';
-  for (let i = 0; i < 6; i++) {
-    const dx = (i-2.5) * W/6.5;
-    cx.fillRect(W/2+dx, H*0.66, 4, 8+((i*17)%18));
-  }
-}
-function buildPhotoBooth() {
-  const HXp = MAP.w/2, S2p = MAP.d/2 + PB_D;
-  // disco ball hanging from the ceiling
-  const disco = new THREE.Mesh(new THREE.SphereGeometry(0.7, 20, 16),
-    new THREE.MeshStandardMaterial({color:0xcfd6dd, metalness:1, roughness:0.15}));
-  disco.position.set(0, 5.6, 40); disco.castShadow = true;
-  disco.userData.sample = {type:'flat', color:'#cfd6dd'}; disco.userData.env = true;
-  scene.add(disco); staticMeshes.push(disco);
-  const cable = new THREE.Mesh(new THREE.CylinderGeometry(0.02,0.02,0.9,6), new THREE.MeshBasicMaterial({color:0x222222}));
-  cable.position.set(0, 6.1, 40);
-  scene.add(cable); staticMeshes.push(cable);
-  // rug + bench, a small hangout corner under the disco ball
-  addBox(6,0.06,4, 0,0.03,40, {canvas:{w:360,h:240,draw:drawRug}, noCollide:true, noShadow:true, name:'pbRug'});
-  addBox(2.6,0.5,0.8, 0,0.35,44.5, {color:'#5a4632', name:'pbBench'});
-  // photo wall — west
-  hangArt(ART.face,    1.6,3.5, -HXp+0.35,3.0, 36,   'x');
-  hangArt(ART.mirror1, 1.6,3.5, -HXp+0.35,3.0, 40.5, 'x');
-  hangArt(ART.mirror2, 1.6,3.5, -HXp+0.35,3.0, 45,   'x');
-  // photo wall — east
-  hangArt(ART.tie,  2.2,3.0, HXp-0.35,3.0, 37, 'x');
-  hangArt(ART.comb, 2.4,2.6, HXp-0.35,3.0, 43, 'x');
-  // photo wall — south (far wall) + welcome graffiti between them
-  hangArt(ART.dark,  1.6,3.5,  -9,3.0, S2p-0.35, 'z');
-  hangArt(ART.panik, 2.4,3.15,  9,3.0, S2p-0.35, 'z');
-  addBox(8,1.8,0.16, 0,4.1,S2p-0.34, {canvas:{w:640,h:150,draw:(cx,W,H)=>propDrawGraffiti(cx,W,H,'WELCOME ANVI & CO')}, noCollide:true, rough:0.85, name:'pbGraffiti'});
 }
 /* =====================================================================
    CHARACTER v3 — one seamless clay "bean person" (lathe body: head melts
@@ -2749,7 +2691,7 @@ function moveWalk(dt){   // grounded movement with collision — seeker FPS, or 
   }else if(collides(ME.pos.x, ny, ME.pos.z)){ ME.vel.y=0; ny=ME.pos.y; }
   ME.pos.y = ny;
   ME.pos.x = clamp(ME.pos.x, -MAP.w/2+0.4, MAP.w/2-0.4);
-  ME.pos.z = clamp(ME.pos.z, -MAP.d/2+0.4, MAP.d/2+PB_D-0.4);
+  ME.pos.z = clamp(ME.pos.z, -MAP.d/2+0.4, MAP.d/2-0.4);
 }
 /* Hider movement (prep AND hunt — the hider is never frozen):
    real physics, chameleon style. On open floor: walk + gravity + jump.
@@ -2807,7 +2749,7 @@ function moveHiderClimb(dt){
   p._walk = moving;
   resolveEmbed();
   ME.pos.x = clamp(ME.pos.x, -MAP.w/2, MAP.w/2);
-  ME.pos.z = clamp(ME.pos.z, -MAP.d/2, MAP.d/2+PB_D);
+  ME.pos.z = clamp(ME.pos.z, -MAP.d/2, MAP.d/2);
   ME.pos.y = clamp(ME.pos.y, 0, MAP.h-0.3);
 }
 /* 50% embed rule: the body's CENTER may reach a surface but never pass inside it.
@@ -2863,7 +2805,7 @@ function moveFreecam(dt){   // caught spectator
   if(keys['shift']) ME.cam.y -= sp;
   ME.cam.x = clamp(ME.cam.x, -MAP.w/2+0.5, MAP.w/2-0.5);
   ME.cam.y = clamp(ME.cam.y, 0.4, MAP.h-0.4);
-  ME.cam.z = clamp(ME.cam.z, -MAP.d/2+0.5, MAP.d/2+PB_D-0.5);
+  ME.cam.z = clamp(ME.cam.z, -MAP.d/2+0.5, MAP.d/2-0.5);
 }
 
 /* ---------------- seeker paint gun ---------------- */
